@@ -88,10 +88,12 @@ AMAP_MAPS_API_KEY=xxxxxxxx
 ### 5. 启动
 
 ```powershell
-# Web 界面（双模式）—— Windows 推荐加 fileWatcherType poll 防止热加载缓存问题
-streamlit run app.py --server.fileWatcherType poll
-```
+# 激活主项目环境
+.\.venv\Scripts\Activate.ps1
 
+# 然后启动
+streamlit run app.py
+```
 浏览器访问 `http://localhost:8501`。
 
 ```powershell

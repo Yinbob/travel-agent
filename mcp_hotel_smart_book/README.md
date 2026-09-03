@@ -5,9 +5,13 @@
 ## ✨ 核心特性
 
 ▸ 多平台实时比价 — 飞猪+途牛+RG+同程4源实时对比，找到最低价
+▸ 国际平台扩展（可选）— 检测到 `.hotelrate-mcp` 环境后，`search` / `advisor` 自动并入 **Agoda + Booking.com** 报价，全网最低可能落在国际平台
 ▸ 订房决策引擎 — 5维度综合判断（时机/性价比/平台价差/房型价值/临近降价），输出🟢订/🟡等/🔴观望信号
 ▸ 低价日历 — 一键扫描7-30天价格洼地，找到最便宜的入住日期
 ▸ 零配置即用 — 无需申请API Key，无需登录Cookie，配置即接入
+
+> ⚠️ Agoda/Booking 演示模式（默认）返回**合成价**并带"演示数据"标记；真实比价需
+> 安装 Playwright 浏览器并设 `HOTELRATE_DEMO=false`（详见仓库根 README「步骤 4」）。
 
 ## 🛠 工具
 
@@ -29,12 +33,26 @@
 ▸ `days`（整数，选填）：扫描天数，最多30，默认14
 
 ### advisor
-指定酒店多平台精确比价+订房决策建议，输出4平台价格对比和订/等信号。
+指定酒店多平台精确比价+订房决策建议，输出各平台价格对比（国内 4 源 + 可选 Agoda/Booking）和订/等信号。
 
 ▸ `hotel`（字符串，✅必填）：酒店名称，如"上海外滩华尔道夫"
 ▸ `city`（字符串，✅必填）：城市名
 ▸ `check_in`（字符串，✅必填）：入住日期，格式YYYY-MM-DD
 ▸ `check_out`（字符串，✅必填）：离店日期，格式YYYY-MM-DD
+
+## 🌐 Agoda / Booking 扩展（可选，hotelrate-mcp）
+
+`search` / `advisor` 返回前会探测 `.hotelrate-mcp` 运行环境：
+
+- `advisor`：对查询的酒店补一次 `hotel_quote`（platforms=booking+agoda），把 **Booking / Agoda** 作为两个平台并进比价与"全网最低"判定。
+- `search`：对价格最便宜的前 `HOTELRATE_SPOT_CHECK`（默认 2）家国内结果再做 Agoda/Booking 抽查，更便宜就以新行并入列表。
+- `calendar`：不变（仍扫描国内飞猪源）。
+
+相关文件：`hotelrate_source.py`（开关与降级）、`hotelrate_bridge.py`（子进程桥）。
+配置（`travel-agent/.env`）：`HOTELRATE_MCP_ENABLED` / `HOTELRATE_DEMO`（默认 true=合成价）
+/ `HOTELRATE_CURRENCY`（默认 CNY，非 CNY 按内置近似汇率折算）
+/ `HOTELRATE_SPOT_CHECK` / `HOTELRATE_QUOTE_TIMEOUT`（默认 90s）。
+环境不存在、未启用或查询失败时自动降级为纯国内平台结果。
 
 ## 📝 使用示例
 

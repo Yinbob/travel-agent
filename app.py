@@ -256,15 +256,21 @@ def _render_search_result(data: dict):
 
     _render_advice(data.get("advice"))
 
+    if data.get("foreign_demo"):
+        st.caption("ℹ️ 含 Agoda / Booking 演示价格（HOTELRATE_DEMO=true，合成数据仅供跑通流程）；真实比价需关闭演示模式并配置爬虫浏览器。")
+
     hotels = data.get("hotels", [])
     if hotels:
         st.markdown("**📋 酒店列表（按价格排序）**")
         rows = []
         for h in hotels:
             price = h.get("price")
+            source = h.get("source", "")
+            if h.get("demo"):
+                source = f"{source}·演示"
             rows.append({
                 "酒店": h.get("name", ""),
-                "平台": h.get("source", ""),
+                "平台": source,
                 "价格": f"¥{price:g}" if isinstance(price, (int, float)) and price > 0 else "—",
                 "星级": h.get("star", ""),
                 "评分": h.get("score", ""),
@@ -312,6 +318,8 @@ def _render_advisor_result(data: dict):
 
     platforms = data.get("platforms", [])
     if platforms:
+        if data.get("foreign_demo"):
+            st.caption("ℹ️ Agoda / Booking 为演示价格（HOTELRATE_DEMO=true，合成数据仅供跑通流程）；真实比价需关闭演示模式并配置爬虫浏览器。")
         st.markdown("**🏷️ 各平台价格对比**")
         cols = st.columns(len(platforms))
         for i, p in enumerate(platforms):
@@ -328,10 +336,11 @@ def _render_advisor_result(data: dict):
                 else:
                     price_html = '<div style="color:#999">未匹配到价格</div>'
                 crown = '<div style="color:#2E7D32;font-size:.8rem">✅ 全网最低</div>' if is_lowest else ""
+                demo_tag = '<span style="color:#b0a05a;font-size:.75rem">· 演示数据</span>' if p.get("demo") else ""
                 st.markdown(
                     f'<div class="result-card fade-in d{min(i + 1, 6)}" '
                     f'style="border-left-color:{border};text-align:center">'
-                    f'<b>{p.get("source", "?")}</b>{price_html}{crown}</div>',
+                    f'<b>{p.get("source", "?")}</b>{demo_tag}{price_html}{crown}</div>',
                     unsafe_allow_html=True,
                 )
                 if p.get("url"):
@@ -411,7 +420,7 @@ def hotel_mode():
         col_a, col_b, col_c = st.columns(3)
         with col_a:
             st.markdown("##### 🔍 多平台实时比价")
-            st.caption("飞猪 + 途牛 + RG + 同程四源实时对比，找到最低价")
+            st.caption("飞猪/途牛/RG/同程 + Agoda/Booking（可选）多平台实时比价，找到最低价")
         with col_b:
             st.markdown("##### 📅 低价日历")
             st.caption("一键扫描 7-30 天价格洼地，找到最便宜的入住日期")
@@ -675,7 +684,7 @@ def travel_mode():
             st.caption("根据你的偏好，AI 精准匹配最适合的景点和路线")
         with col_c:
             st.markdown("##### 🏨 酒店多平台比价")
-            st.caption("飞猪/途牛/RG/同程实时比价，给出订房时机建议")
+            st.caption("飞猪/途牛/RG/同程 + Agoda/Booking（可选）实时比价，给出订房时机建议")
         with col_d:
             st.markdown("##### 📊 预算自动汇总")
             st.caption("景点门票、餐饮、住宿、交通费用一目了然")

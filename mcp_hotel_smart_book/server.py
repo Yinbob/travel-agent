@@ -10,6 +10,13 @@ from datetime import datetime, timedelta
 
 from fastmcp import FastMCP
 
+try:
+    # 以包内导入方式加载（例如 future 包化运行时）
+    from . import hotelrate_source as _hr
+except ImportError:  # noqa: E402
+    # 直接 `python server.py` 运行：脚本目录在 sys.path 上
+    import hotelrate_source as _hr  # noqa: E402
+
 mcp = FastMCP("mcp-hotel-smart-book")
 
 # ============ 配置 ============
@@ -401,6 +408,45 @@ def search(city: str, check_in: str, check_out: str, keyword: str = "") -> str:
                 hotels.append(h)
                 seen.append(h_name)
 
+    # ===== Agoda / Booking（外部 MCP 数据源，可选）=====
+    # 对最便宜的 N 家国内平台结果，再向 hotelrate-mcp（Agoda + Booking）取一次价，
+    # 若更便宜则作为新行合并进列表（可在环境变量关闭：HOTELRATE_MCP_ENABLED=false）。
+    foreign_checked = False
+    foreign_demo = False
+    if _hr.enabled():
+        priced_hotels = [h for h in hotels
+                         if isinstance(h.get("price"), (int, float)) and h["price"] > 0]
+        # 对最便宜的 N 家做外部抽查（这些最可能是候选成交目标）
+        priced_hotels.sort(key=lambda h: h["price"])
+        spotlight = priced_hotels[:_hr.spot_check_count()]
+        if spotlight:
+            foreign_checked = True
+            for cand in spotlight:
+                cand_name = cand.get("name", "")
+                if not cand_name:
+                    continue
+                fquote = _hr.quote(cand_name, city, check_in, check_out)
+                if not fquote.get("ok"):
+                    # 数据源基础设施故障（子进程起不来/整体超时）：停止继续抽查，
+                    # 避免每个候选都等满超时把整次搜索拖死
+                    break
+                if fquote.get("demo"):
+                    foreign_demo = True
+                for key in ("booking", "agoda"):
+                    entry = (fquote.get("platforms") or {}).get(key)
+                    if not entry or not entry.get("matched"):
+                        continue
+                    hotels.append({
+                        "name": cand_name,
+                        "price": entry.get("price"),
+                        "star": "", "score": "",
+                        "url": entry.get("url", ""),
+                        "source": entry.get("source"),
+                        "room_name": entry.get("room_name", ""),
+                        "foreign": True,
+                        "demo": bool(fquote.get("demo")),
+                    })
+
     hotels.sort(key=lambda x: x.get("price", 999999) if isinstance(x.get("price"), (int, float)) and x.get("price", 0) > 0 else 999999)
 
     lowest = next((h for h in hotels if isinstance(h.get("price"), (int, float)) and h["price"] > 0), None)
@@ -415,6 +461,8 @@ def search(city: str, check_in: str, check_out: str, keyword: str = "") -> str:
         "lowest_price": lowest["price"] if lowest else None,
         "lowest_hotel": lowest["name"] if lowest else None,
         "lowest_url": lowest.get("url", "") if lowest else "",
+        "foreign_checked": foreign_checked,
+        "foreign_demo": foreign_demo,
         "advice": advice,
     }, ensure_ascii=False, indent=2)
 
@@ -489,8 +537,32 @@ def advisor(hotel: str, city: str, check_in: str, check_out: str) -> str:
         compare_tc(hotel, city, check_in, check_out),
     ]
 
+    # ===== Agoda / Booking（外部 MCP 数据源，可选）=====
+    # 通过 hotelrate-mcp 对同一家酒店补 Agoda + Booking 两家国际平台价格，
+    # 让「全网最低」可能落在 Booking / Agoda。可用 HOTELRATE_MCP_ENABLED=false 关闭。
+    foreign_checked = _hr.enabled()
+    foreign_demo = False
+    if foreign_checked:
+        fquote = _hr.quote(hotel, city, check_in, check_out)
+        foreign_demo = bool(fquote.get("demo"))
+        for key in ("booking", "agoda"):
+            entry = (fquote.get("platforms") or {}).get(key)
+            if not entry:
+                continue
+            results.append({
+                "source": entry.get("source"),
+                "matched": bool(entry.get("matched")),
+                "name": entry.get("name") or hotel,
+                "price": entry.get("price"),
+                "url": entry.get("url", ""),
+                "cancel_policy": entry.get("cancel_policy", ""),
+                "room_name": entry.get("room_name", ""),
+                "demo": bool(entry.get("matched")) and foreign_demo,
+                "error": entry.get("error", ""),
+            })
+
     priced = [r for r in results if r.get("matched") and r.get("price") and isinstance(r["price"], (int, float)) and r["price"] > 0]
-    commission_order = {"RG": 0, "飞猪": 1, "途牛": 2, "同程": 3}
+    commission_order = {"RG": 0, "飞猪": 1, "途牛": 2, "同程": 3, "Booking": 4, "Agoda": 5}
     priced.sort(key=lambda x: (x["price"], commission_order.get(x.get("source", ""), 9)))
     all_sorted = priced + [r for r in results if r not in priced]
 
@@ -503,6 +575,8 @@ def advisor(hotel: str, city: str, check_in: str, check_out: str) -> str:
     return json.dumps({
         "success": True, "hotel_name": hotel, "city": city, "check_in": check_in, "check_out": check_out,
         "platforms": all_sorted,
+        "foreign_checked": foreign_checked,
+        "foreign_demo": foreign_demo,
         "lowest_price": priced[0]["price"] if priced else None,
         "lowest_platform": priced[0]["source"] if priced else None,
         "lowest_url": priced[0].get("url") if priced else None,
@@ -512,6 +586,14 @@ def advisor(hotel: str, city: str, check_in: str, check_out: str) -> str:
 
 def main():
     """酒店聪明订 MCP服务入口"""
+    # 让 travel-agent/.env 里的 HOTELRATE_* / PROXY_TOKEN 等配置生效
+    # （进程由外部以 stdio 拉起时不一定继承了 shell 环境）
+    try:
+        from dotenv import load_dotenv
+        from pathlib import Path
+        load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+    except Exception:
+        pass
     mcp.run()
 
 

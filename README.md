@@ -2,7 +2,8 @@
 
 > 一个界面整合「智能旅行规划」与「多平台酒店比价」的 Streamlit 应用。
 > 旅行规划由 Multi-Agent 驱动，接入**高德开放平台官方 MCP**（天气 / POI / 路线）与**通义千问（DashScope）**；
-> 酒店比价内置「酒店聪明订」FastMCP 服务，聚合飞猪 / 途牛 / RG / 同程四平台实时价格，提供订房时机建议。
+> 酒店比价内置「酒店聪明订」FastMCP 服务，聚合飞猪 / 途牛 / RG / 同程四平台实时价格，提供订房时机建议；
+> 并**可选**通过 hotelrate-mcp 接入 **Agoda 与 Booking.com** 两个国际平台（默认演示模式，无需浏览器）。
 
 ---
 
@@ -29,8 +30,11 @@ Web 界面在侧边栏顶部切换两个功能模式。
 | ----------- | ------------- | ---------------------------------------------------- |
 | 🔍 比价搜索 | `search`    | 飞猪 + 途牛合并去重，按价格排序并给出订房建议        |
 | 📅 低价日历 | `calendar`  | 扫描 5-30 天入住价格洼地，标注低价 / 适中 / 偏贵     |
-| 🧭 订房决策 | `advisor`   | 指定酒店四平台精确比价，输出 🟢 订 / 🟡 等 / 🔴 观望 |
+| 🧭 订房决策 | `advisor`   | 指定酒店多平台精确比价，输出 🟢 订 / 🟡 等 / 🔴 观望 |
+| 🌐 Agoda / Booking | `search`/`advisor` 内置扩展 | 经 hotelrate-mcp 实时比价（可选，默认演示模式合成数据，无需浏览器与 Key） |
 
+> 国内四平台（飞猪/途牛/RG/同程）走内置代理直连；Agoda / Booking.com 由独立的
+> `hotelrate-mcp` 环境提供（演示模式开箱即用，真实比价需安装 Playwright 浏览器）。
 > 酒店价格实时变动，查询结果仅供参考，实际价格以预订页面为准。
 
 ![示例1](示例1.png)
@@ -70,7 +74,30 @@ python -m venv .hotel-mcp
 
 > `.hotel-mcp` 已加入 `.gitignore`；应用会按 `travel-agent/.hotel-mcp/Scripts/python.exe` 自动找到它。
 
-### 4. 配置 API Key
+### 4.（可选）安装 Agoda / Booking 数据源环境（hotelrate-mcp）
+
+接入 Agoda 与 Booking.com 需要在另一个独立 venv 安装 [hotelrate-mcp](https://github.com/seanbabalala/hotelrate-crawl)（依赖 mcp 1.x，与 `.hotel-mcp` 的 fastmcp4 / mcp 2.x 隔离）：
+
+```powershell
+python -m venv .hotelrate-mcp
+.hotelrate-mcp\Scripts\python -m pip install "git+https://github.com/seanbabalala/hotelrate-crawl.git"
+# 上游 pyproject 未限定 mcp 版本上限，而代码基于 mcp 1.x API，需固定回 1.x：
+.hotelrate-mcp\Scripts\python -m pip install "mcp[cli]>=1.20,<2"
+```
+
+- 不装此环境时，`search` / `advisor` 完全等同原来的国内四平台行为（自动探测 `.hotelrate-mcp` 是否存在来启用）。
+- 默认 **`HOTELRATE_DEMO=true`**：Agoda / Booking 返回演示合成价（UI 会明确标注"演示数据"），开箱即可跑通全流程。
+- **真实比价（可选，需自行承担反爬风险）**：额外安装浏览器并登录对应平台账号，再把 `.env` 中 `HOTELRATE_DEMO` 设为 `false`：
+  ```powershell
+  .hotelrate-mcp\Scripts\python -m pip install playwright
+  .hotelrate-mcp\Scripts\python -m playwright install chromium
+  ```
+
+> 接入架构：`.hotel-mcp` 里的酒店聪明订服务通过 `mcp_hotel_smart_book/hotelrate_bridge.py`
+> 桥接子进程（在 `.hotelrate-mcp` 环境内用 mcp 1.x 客户端）连接 hotelrate-mcp 的
+> `hotel_quote` 工具，再把 Agoda / Booking 报价合并进 `search` / `advisor` 结果。
+
+### 5. 配置 API Key
 
 在 `travel-agent` 目录创建 `.env`：
 
@@ -80,12 +107,20 @@ DASHSCOPE_API_KEY=sk-xxxx
 
 # 高德地图 MCP（高德开放平台 Web 服务 Key），智能旅行规划必需
 AMAP_MAPS_API_KEY=xxxxxxxx
+
+# ── 可选：Agoda / Booking 数据源（hotelrate-mcp）────────────
+# HOTELRATE_MCP_ENABLED=true          # false 彻底关闭外部 MCP
+# HOTELRATE_DEMO=true                 # true=演示合成价（默认）；false=真实爬取
+# HOTELRATE_CURRENCY=CNY              # 请求币种，非人民币按内置近似汇率折算
+# HOTELRATE_LOCALE=zh-CN
+# HOTELRATE_SPOT_CHECK=2              # search 对最便宜前 N 家做 Agoda/Booking 抽查
+# HOTELRATE_QUOTE_TIMEOUT=90          # 单次查询超时（秒）
 ```
 
 - DashScope Key：https://dashscope.console.aliyun.com/
 - 高德 Web 服务 Key：https://lbs.amap.com/ → 控制台创建应用，Key 类型选 **Web服务**
 
-### 5. 启动
+### 6. 启动
 
 ```powershell
 # 激活主项目环境
@@ -116,14 +151,17 @@ travel-agent/
 ├── prompts.py               # Planner Agent 系统提示词（含 image_url 提取要求）
 ├── render.py                # JSON 容错解析 + CLI/Web 渲染 + 景点图片获取 + PDF 生成
 ├── requirements.txt         # 主环境依赖（含 reportlab）
-├── .env                     # 本地密钥（不入库）
+├── .env                     # 本地密钥与 HOTELRATE_* 开关（不入库）
 ├── .hotel-mcp/              # 酒店比价运行环境 venv（不入库）
+├── .hotelrate-mcp/          # （可选）Agoda/Booking 数据源 venv：hotelrate-mcp（不入库）
 ├── agents/
 │   └── planner.py           # Planner Agent：直接持有 MCP 工具（无嵌套子 Agent）
 └── mcp_hotel_smart_book/    # 内置酒店比价 FastMCP 服务（search/calendar/advisor）
-    ├── server.py
+    ├── server.py            # 服务端：国内四平台 + 可选合并 Agoda/Booking
+    ├── hotelrate_source.py  # 外部 MCP 数据源适配器（env 配置/汇率折算/桥进程调度）
+    ├── hotelrate_bridge.py  # 桥接子进程（在 .hotelrate-mcp 内以 mcp1 客户端连 hotelrate）
     ├── __init__.py / __main__.py
-    └── README.md            # 原「酒店聪明订」服务文档
+    └── README.md            # 「酒店聪明订」服务文档（含 Agoda/Booking 接入说明）
 ```
 
 ---
@@ -160,6 +198,7 @@ travel-agent/
 - 高德官方工具命名：`maps_weather`、`maps_text_search`、`maps_around_search`、`maps_search_detail`、`maps_geo`、`maps_direction_walking/driving/transit_integrated/bicycling` 等。路线工具为**坐标版**，规划前用 `maps_geo` 或 POI 返回的 `location` 转经纬度。
 - 主环境 mcp SDK 固定为 **1.x**（`langchain-mcp-adapters` 依赖其 API），酒店服务用独立 `.hotel-mcp` 跑 fastmcp 4 + mcp 2，避免版本冲突。
 - 领域工具过滤：先精确/前缀匹配，再关键字兜底，能兼容不同版本高德服务的工具命名差异。
+- **Agoda / Booking 外部 MCP（可选）**：酒店聪明订服务（跑在 `.hotel-mcp`）通过 `hotelrate_bridge.py` 子进程（跑在 `.hotelrate-mcp`，mcp 1.x 客户端）调用 hotelrate-mcp 的 `hotel_quote`（Booking.com + Agoda），结果归一化后并入 `search`（最便宜前 N 家抽查）与 `advisor`（全网最低可能落在 Booking / Agoda）。两处环境不存在或失败都**静默降级**，不影响国内四平台。
 
 ---
 
@@ -183,6 +222,12 @@ travel-agent/
 
 - 独立于规划链路：不 import config，因此**酒店比价模式不要求任何 API Key**。
 - 每次查询按需启动一次酒店 MCP stdio 子进程并返回结果文本。
+
+### mcp_hotel_smart_book /（可选）hotelrate-mcp
+
+- `server.py` 的 `search` / `advisor` 在返回前若检测到 `.hotelrate-mcp` 环境且未禁用，会把 **Agoda / Booking** 报价合并进结果（演示数据默认标注）；`calendar` 保持国内平台逻辑不变。
+- `hotelrate_source.py`：配置开关（`HOTELRATE_MCP_ENABLED / HOTELRATE_DEMO / HOTELRATE_CURRENCY / HOTELRATE_SPOT_CHECK / HOTELRATE_QUOTE_TIMEOUT`），非 CNY 近似汇率折算，桥子进程的启动/超时/降级。
+- `hotelrate_bridge.py`：在 `.hotelrate-mcp` 内以 mcp 1.x stdio 客户端调用 `hotel_quote`，输出一行归一化 JSON（Booking + Agoda 各自最低价/链接/取消政策）。
 
 ### agents / prompts
 
@@ -223,7 +268,10 @@ travel-agent/
 | `function.arguments ... must be in JSON format` | ChatTongyi 回传残缺 tool_call 片段；已内置补丁修复                                                  |
 | 规划结束只剩引导语 / 结果为空                     | qwen3-max 流式丢内容或 JSON 解析失败；已切非流式 + 容错解析；仍失败时红框会显示真实原因             |
 | 提示找不到`.hotel-mcp`                          | 未建酒店运行环境：`python -m venv .hotel-mcp && .hotel-mcp\Scripts\python -m pip install fastmcp` |
-| pip 安装后被装上 mcp 2.x                          | `requirements.txt` 已固定 `mcp>=1.24,<2`；卸载后重装                                            |
+| 提示`未找到 Agoda/Booking 数据源运行环境`       | 属正常降级提示（比价继续用国内四平台）。想启用 Agoda/Booking 就按「步骤 4」装 `.hotelrate-mcp` |
+| Agoda/Booking 卡片显示"演示数据"                 | `HOTELRATE_DEMO=true`（默认）返回合成价；真实比价需装 Playwright 浏览器并设 `HOTELRATE_DEMO=false` |
+| 比价里没有 Agoda/Booking 行                     | `.hotelrate-mcp` 未装、或 `.env` 设了 `HOTELRATE_MCP_ENABLED=false`，或单次查询超时（调大 `HOTELRATE_QUOTE_TIMEOUT`） |
+| pip 安装后被装上 mcp 2.x                          | `requirements.txt` 已固定 `mcp>=1.24,<2`；`.hotelrate-mcp` 需补 `pip install "mcp[cli]>=1.20,<2"` |
 | 端口被占用                                        | Streamlit 会自动换端口，或先`Ctrl+C` 旧实例                                                       |
 
 > 每次修改 `.env` 或依赖后都需重启 `streamlit run app.py` 才能生效。
@@ -242,6 +290,7 @@ travel-agent/
 8. 景点真实配图：`render.attraction_photo()` 直接调高德 POI REST API 拿 photos[0].url；Prompt 要求 LLM 从 MCP 结果提取 `image_url`；UI 三级降级（真实照片 → 兜底高德查询 → 地图底图）。
 9. PDF 导出：Markdown 下载改为 reportlab PDF（封面页 + 天气表格 + 每日行程 + 预算高亮 + 酒店比价 + 页码），自动跨平台发现中文字体。
 10. Windows Streamlit 热加载缓存问题 → 推荐用 `--server.fileWatcherType poll` 启动。
+11. 酒店比价扩展 Agoda / Booking：接入开源 [hotelrate-mcp](https://github.com/seanbabalala/hotelrate-crawl)（Booking.com + Agoda 实时比价）。因其依赖 mcp 1.x，放独立 `.hotelrate-mcp` venv，并用 `hotelrate_bridge.py` 子进程做 mcp1↔mcp1 连接避免与 `.hotel-mcp` 的 mcp2 握手问题；结果并入 `search`（最便宜前 N 家抽查）与 `advisor`（全网最低可落在 Booking/Agoda）；上游 pyproject 未限 mcp 上限 → 需补 `pip install "mcp[cli]>=1.20,<2"` 固定回 1.x。
 
 ---
 
@@ -263,3 +312,5 @@ reportlab
 > `reportlab`（v5.0.1）用于 PDF 生成，自动跨平台发现系统中文字体（Windows 默认 simhei.ttf / 黑体）。
 
 `.hotel-mcp` venv 内：`fastmcp`（自动携带 mcp 2.x）。
+
+`.hotelrate-mcp` venv 内（可选，Agoda/Booking 数据源）：`hotelrate-mcp`（依赖 mcp 1.x、pydantic、httpx、playwright），代码见 https://github.com/seanbabalala/hotelrate-crawl

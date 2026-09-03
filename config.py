@@ -5,6 +5,8 @@ import os
 from dataclasses import dataclass, field
 from dotenv import load_dotenv
 from langchain_community.chat_models.tongyi import ChatTongyi
+from langchain_community.chat_models import tongyi as _tongyi_module
+from langchain_core.messages import AIMessage
 
 load_dotenv()
 
@@ -42,6 +44,44 @@ def _patched_subtract(self, resp, prev_resp):
 ChatTongyi.subtract_client_response = _patched_subtract
 # ========== 修复结束 ==========
 
+# ========== 修复 ChatTongyi 回传历史时 tool_calls 参数非 JSON ==========
+# 上游 bug: 流式 chunk 把未拼完整的原始 tool_call 塞进 additional_kwargs，
+# 下次请求时原样回传给 DashScope，触发
+# "The function.arguments parameter ... must be in JSON format" (400)。
+# 修复：回传时用 langchain 已解析好的 message.tool_calls 重建干净的
+# tool_calls（arguments 转 JSON 字符串），丢弃残缺原始片段。
+_ORIG_CONVERT_MESSAGE_TO_DICT = _tongyi_module.convert_message_to_dict
+
+
+def _patched_convert_message_to_dict(message):
+    import json
+
+    message_dict = _ORIG_CONVERT_MESSAGE_TO_DICT(message)
+    if isinstance(message, AIMessage):
+        tool_calls = getattr(message, "tool_calls", None)
+        if tool_calls:
+            clean_tool_calls = []
+            for call in tool_calls:
+                args = call.get("args")
+                if isinstance(args, (dict, list)):
+                    args = json.dumps(args, ensure_ascii=False)
+                clean_tool_calls.append({
+                    "type": "function",
+                    "id": call.get("id") or "",
+                    "function": {
+                        "name": call.get("name") or "",
+                        "arguments": args if isinstance(args, str) else json.dumps(args),
+                    },
+                })
+            message_dict["tool_calls"] = clean_tool_calls
+        else:
+            message_dict.pop("tool_calls", None)
+    return message_dict
+
+
+_tongyi_module.convert_message_to_dict = _patched_convert_message_to_dict
+# ========== 修复结束 ==========
+
 
 @dataclass
 class Config:
@@ -56,19 +96,32 @@ class Config:
     model_name: str = "qwen3-max"
     temperature: float = 0.7
 
-    # MCP 连接（阿里百炼高德地图）
+    # 地图 MCP 连接（高德开放平台官方 MCP，原阿里百炼 amap-maps 已下线）
     mcp_transport: str = "http"
-    mcp_url: str = "https://dashscope.aliyuncs.com/api/v1/mcps/amap-maps/mcp"
+    mcp_url: str = field(
+        default_factory=lambda: os.getenv("AMAP_MCP_URL", "https://mcp.amap.com/mcp")
+    )
+    amap_api_key: str = field(
+        default_factory=lambda: os.getenv("AMAP_MAPS_API_KEY")
+        or os.getenv("AMAP_API_KEY", "")
+    )
 
     # 工具领域映射
     tool_domains: dict = field(default_factory=lambda: {
-        "poi":     ["maps_text_search", "maps_search_detail"],
+        "poi":     ["maps_text_search", "maps_search_detail", "maps_around_search"],
         "weather": ["maps_weather"],
         "route":   [
+            "maps_direction_walking",
             "maps_direction_walking_by_address",
+            "maps_direction_driving",
             "maps_direction_driving_by_address",
+            "maps_direction_transit_integrated",
             "maps_direction_transit_integrated_by_address",
+            "maps_direction_bicycling",
+            "maps_bicycling",
+            "maps_geo",
         ],
+        "hotel":   ["search", "calendar", "advisor"],
     })
 
     # 自动检查初始化
@@ -76,13 +129,27 @@ class Config:
         if not self.api_key:
             raise ValueError("请配置 DASHSCOPE_API_KEY")
 
+    # 生成带高德 Key 的 MCP 地址
+    def map_mcp_url(self) -> str:
+        url = self.mcp_url
+        if "key=" not in url:
+            if not self.amap_api_key:
+                raise RuntimeError(
+                    "未配置高德地图 Key：请在 travel-agent 目录的 .env 中设置 "
+                    "AMAP_MAPS_API_KEY=你的高德Web服务Key（前往 https://lbs.amap.com 申请）"
+                )
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}key={self.amap_api_key}"
+        return url
+
     # 创建模型实例对象
     def create_llm(self) -> ChatTongyi:
         return ChatTongyi(
             model=self.model_name,
             api_key=self.api_key,
             temperature=self.temperature,
-            streaming=True,          # ← 启用水龙头，流式输出最远走到这里
+            streaming=False,         # 关闭流式：qwen3-max 流式下最终消息内容会丢失
+            model_kwargs={"max_tokens": 8192},  # 行程 JSON 较长，避免输出被截断
         )
 
 

@@ -1,0 +1,8 @@
+langchain
+langchain-community
+langchain-mcp-adapters
+# langchain-mcp-adapters 依赖 mcp 1.x 的 API，mcp 2.x 会破坏导入
+mcp>=1.24,<2
+streamlit
+python-dotenv
+dashscope

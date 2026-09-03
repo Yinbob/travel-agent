@@ -4,14 +4,43 @@ import json
 
 def parse_plan(text: str) -> dict | None:
     """从混合文本中提取并解析旅行计划 JSON。"""
+    if not text or not text.strip():
+        return None
+
+    cleaned = text.strip()
+    # 去掉 ```json ... ``` 代码块包裹
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        cleaned = cleaned.removeprefix("json").strip()
+
+    # 方式一：直接取首尾大括号
     try:
-        start = text.find("{")
-        end = text.rfind("}") + 1
+        start = cleaned.find("{")
+        end = cleaned.rfind("}") + 1
         if start == -1 or end == 0:
             return None
-        return json.loads(text[start:end])
+        return json.loads(cleaned[start:end])
     except (json.JSONDecodeError, KeyError):
+        pass
+
+    # 方式二：容错扫描第一个合法 JSON 对象
+    try:
+        decoder = json.JSONDecoder()
+        pos = 0
+        while pos < len(cleaned):
+            while pos < len(cleaned) and cleaned[pos] != "{":
+                pos += 1
+            if pos >= len(cleaned):
+                break
+            try:
+                obj, _ = decoder.raw_decode(cleaned[pos:])
+                if isinstance(obj, dict):
+                    return obj
+            except json.JSONDecodeError:
+                pos += 1
+    except Exception:
         return None
+    return None
 
 
 # ==================== CLI 格式化 ====================

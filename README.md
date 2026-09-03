@@ -1,6 +1,6 @@
-# 🧳 智能旅行助手 (AI Travel Agent)
+# 🧳 智能旅行 & 酒店比价助手
 
-> 基于 Multi-Agent 架构的智能旅行规划系统，集成高德地图 MCP 服务，支持 CLI 和 Web 双界面。输入目的地、日期和偏好，AI 自动规划包含天气、景点、酒店、餐饮、交通和预算的完整旅行方案。
+> 基于 Multi-Agent 架构的智能旅行规划系统，集成高德地图 MCP 服务与多平台酒店比价 MCP 服务，支持 CLI 和 Web 双界面。Web 界面提供「🧳 智能旅行规划」与「🏨 酒店比价」双模式：AI 自动规划包含天气、景点、酒店、餐饮、交通和预算的完整旅行方案；酒店比价模式支持飞猪/途牛/RG/同程 4 平台实时比价、低价日历扫描与订房时机决策。
 
 ---
 
@@ -47,18 +47,34 @@
 | 🏨 酒店推荐 | 统一 POI 搜索，按位置推荐附近酒店 |
 | 🗺️ 路线规划 | 支持步行/驾车/公交三种方式的路径规划 |
 | 📊 预算汇总 | 自动汇总景点门票、酒店、餐饮、交通各项费用 |
+| 🏨 酒店比价 | 飞猪/途牛/RG/同程实时比价 + 低价日历 + 订房决策（可独立查询，也可随行程生成） |
 | 📥 导出下载 | Web 界面支持 Markdown 格式下载 |
 
 **运行方式：**
 
 ```bash
-# CLI 模式（命令行输出）
-cd Agent
-python Agent.py
+# 1. 安装主环境依赖
+pip install langchain langchain-community langchain-mcp-adapters "mcp>=1.24,<2" streamlit python-dotenv dashscope
 
-# Web 模式（Streamlit 图形界面）
+# 2. 安装酒店比价服务运行环境（独立 venv，内部使用 fastmcp 4 + mcp 2）
+python -m venv .hotel-mcp
+.hotel-mcp\Scripts\python -m pip install fastmcp
+
+# 3. Web 模式（Streamlit 图形界面，含旅行规划 + 酒店比价双模式）
 streamlit run app.py
+
+# CLI 模式（仅旅行规划，命令行输出）
+python Agent.py
 ```
+
+**内置酒店比价服务配置（可选）：**
+
+酒店比价服务（原「酒店聪明订」MCP 项目，现内置在 `mcp_hotel_smart_book/`，详见该目录下 `README.md`）通过代理接口聚合飞猪/途牛/RG/同程数据，默认开箱即用，也可用环境变量覆盖：
+
+| 环境变量 | 说明 |
+|------|------|
+| `PROXY_TOKEN` | 代理服务认证 Token（默认内置，一般无需配置） |
+| `FLIGGY_PROXY_URL` / `TUNIU_PROXY_URL` / `RG_PROXY_URL` / `HOTEL_PROXY_URL` | 各平台代理端点 |
 
 ---
 
@@ -101,7 +117,7 @@ streamlit run app.py
                        │
                        ▼
 ┌──────────────────────────────────────────────────────────┐
-│              阿里百炼 MCP 服务 (高德地图)                  │
+│           高德开放平台 MCP 服务 (高德地图)                 │
 │                                                          │
 │   15 个工具: maps_text_search, maps_weather,              │
 │   maps_direction_*, maps_geo, maps_distance, ...         │
@@ -137,6 +153,8 @@ Agent/
 ├── __init__.py              # 包标记
 ├── config.py                # 配置中心：API Key、模型参数、MCP 连接 + Monkey-Patch
 ├── mcp_client.py            # MCP 客户端管理器（单例模式）
+├── hotel_compare.py         # 酒店比价独立调用器（无需 DashScope Key）
+├── mcp_hotel_smart_book/    # 酒店聪明订 MCP 服务（fastmcp，search/calendar/advisor）
 ├── prompts.py               # 5 个 System Prompt 集中管理
 ├── render.py                # 渲染引擎：JSON 解析 + CLI 格式化
 ├── Agent.py                 # CLI 入口
@@ -158,7 +176,7 @@ Agent/
 **设计要点：**
 
 - **`@dataclass`** 定义 `Config` 类，模块级 `CONFIG` 实例作为单例
-- `tool_domains` 字典实现**工具领域映射**：将 15 个 MCP 工具按功能分为 poi/weather/route 三组
+- `tool_domains` 字典实现**工具领域映射**：将 MCP 工具按功能分为 poi/weather/route/hotel 四组（hotel 组含比价服务的 search/calendar/advisor）
 - `__post_init__` 自动校验 `DASHSCOPE_API_KEY` 是否设置
 - `create_llm()` 工厂方法统一创建 `ChatTongyi` 实例，`streaming=True` 启用流式输出
 
@@ -170,7 +188,7 @@ Agent/
 
 ### mcp_client.py — MCP 连接管理（单例模式）
 
-**职责：** 管理与阿里百炼高德地图 MCP 服务器的生命周期，按领域分发工具。
+**职责：** 管理与高德开放平台官方 MCP 服务器（`mcp.amap.com`）的生命周期，按领域分发工具。
 
 **设计模式：单例模式（`__new__` + `_initialized` 标志）**
 
@@ -186,7 +204,7 @@ McpClientManager()
 **关键实现细节：**
 
 - **双重单例保护**：`_instance` (类变量) 确保 `__new__` 返回同一对象；`_initialized` (实例变量) 确保 `__init__` 只执行一次。两者缺一不可——`TripPlanner.__init__` 中可安全创建 `McpClientManager()`，不会产生多个实例
-- **MCP 连接配置**：通过 `transport: "http"` 连接到阿里百炼托管的 MCP 服务器，认证头为 `Bearer {DASHSCOPE_API_KEY}`
+- **MCP 连接配置**：`amap-server` 通过 `transport: "http"` 连接高德开放平台官方 MCP（地址 `https://mcp.amap.com/mcp`，以 `?key=` 携带高德 Web 服务 Key）；`hotel-server` 通过 `transport: "stdio"` 以独立 venv（`.hotel-mcp`）启动本地酒店比价服务，两个 MCP 服务并存
 - **工具缓存**：`_tools_cache` 字典按 key 缓存——`"all"` 存完整列表，全量工具只请求一次
 
 ---
@@ -397,19 +415,25 @@ conda create -n Agent python=3.12
 conda activate Agent
 
 # 安装依赖
-pip install langchain langchain-community langchain-mcp-adapters
+pip install langchain langchain-community langchain-mcp-adapters "mcp>=1.24,<2"
 pip install streamlit python-dotenv dashscope
+
+# 安装酒店比价服务运行环境（独立 venv：fastmcp 4 + mcp 2，与主环境 mcp 1.x 隔离）
+python -m venv .hotel-mcp
+.hotel-mcp\Scripts\python -m pip install fastmcp
 ```
 
-### 2. 配置 API Key
+### 2. 配置 Key
 
 在项目根目录创建 `.env` 文件：
 
 ```env
-DASHSCOPE_API_KEY=your_dashscope_api_key_here
+DASHSCOPE_API_KEY=your_dashscope_api_key_here   # 通义千问 LLM（阿里百炼）
+AMAP_MAPS_API_KEY=your_amap_web_service_key     # 高德地图 MCP（高德开放平台）
 ```
 
-> 阿里百炼 API Key 申请地址：https://dashscope.console.aliyun.com/
+- 通义千问 Key（LLM 用）：https://dashscope.console.aliyun.com/
+- 高德 Web 服务 Key（地图天气/POI/路线用，原阿里百炼 amap MCP 已下线，现走高德开放平台官方 MCP）：https://lbs.amap.com/ → 控制台创建「Web服务」类型 Key
 
 ### 3. 运行
 
@@ -427,7 +451,12 @@ streamlit run app.py
 
 **CLI 模式**：修改 `Agent.py` 中 `main()` 函数的 `user_input` 变量
 
-**Web 模式**：在侧边栏填写目的地、日期、偏好，点击「开始规划」
+**Web 模式**：侧边栏顶部切换功能模式
+
+- 🧳 **智能旅行规划**：填写目的地、日期、偏好，点击「开始规划」；需配置 `DASHSCOPE_API_KEY`（LLM）与 `AMAP_MAPS_API_KEY`（高德 MCP），规划完成后会为选定酒店附带多平台比价结论
+- 🏨 **酒店比价**：填写城市与日期，可选「🔍 比价搜索 / 📅 低价日历 / 🧭 订房决策」，无需配置任何 API Key
+
+> 酒店比价接口价格实时变动，查询结果仅供参考，实际以预订页面为准。
 
 ---
 

@@ -1,0 +1,6 @@
+.hotel-mcp/
+.venv/
+__pycache__/
+*.pyc
+.env
+.streamlit/

@@ -24,6 +24,9 @@ TOOL_LABELS = {
     "maps_direction_walking_by_address":             ("🚶", "规划步行路线"),
     "maps_direction_driving_by_address":             ("🚗", "规划驾车路线"),
     "maps_direction_transit_integrated_by_address":  ("🚌", "规划公交路线"),
+    "search":   ("🏨", "酒店多平台比价"),
+    "calendar": ("📅", "扫描低价日历"),
+    "advisor":  ("🧭", "订房决策分析"),
 }
 
 # 匹配子 Agent 内部泄漏的 [TOOL_CALL:...] 模式
@@ -40,6 +43,10 @@ class TripPlanner:
         ├── search_attraction → AttractionAgent → MCP: maps_text_search
         ├── query_weather     → WeatherAgent    → MCP: maps_weather
         └── maps_direction_*  → 直接 MCP 路线工具
+    酒店比价（直接工具）:
+        ├── search      → 酒店聪明订 MCP: search
+        ├── calendar    → 酒店聪明订 MCP: calendar
+        └── advisor     → 酒店聪明订 MCP: advisor
 
     用法:
         planner = TripPlanner(llm)
@@ -76,6 +83,7 @@ class TripPlanner:
         poi_tools = await self.mcp.get_tools_for("poi")
         weather_tools = await self.mcp.get_tools_for("weather")
         route_tools = await self.mcp.get_tools_for("route")
+        hotel_price_tools = await self.mcp.get_tools_for("hotel")
 
         # 2. 创建子 Agent
         self._hotel_agent = SpecialistAgent(
@@ -108,7 +116,7 @@ class TripPlanner:
             return await self._weather_agent.invoke(query)
 
         # 4. 组装 Planner：子 Agent 工具 + 路线 MCP 工具
-        all_tools = [search_hotel, search_attraction, query_weather, *route_tools]
+        all_tools = [search_hotel, search_attraction, query_weather, *route_tools, *hotel_price_tools]
 
         self._agent = create_agent(
             model=self.llm,
@@ -136,8 +144,14 @@ class TripPlanner:
           - 普通 token: 直接 yield（过滤掉子 Agent 内部 TOOL_CALL 泄漏）
           - 工具开始:   yield "\\n[调用: tool_name]\\n"
           - 工具结束:   yield "\\n[完成: tool_name]\\n"
+
+        注意：模型配置为 streaming=False 时没有逐 token 事件，改为在
+        on_chat_model_end 捕获最终回复，在迭代结束时统一 yield。
         """
         await self.build()
+
+        streamed_any = False
+        final_content = ""
 
         async for event in self._agent.astream_events(
             {"messages": [{"role": "user", "content": user_input}]},
@@ -151,7 +165,19 @@ class TripPlanner:
                     # 过滤子 Agent 内部 TOOL_CALL 格式泄漏
                     content = _TOOL_CALL_PATTERN.sub("", content)
                     if content.strip():
+                        streamed_any = True
                         yield content
+
+            elif kind == "on_chat_model_end":
+                output = event["data"].get("output")
+                content = getattr(output, "content", "") if output is not None else ""
+                if isinstance(content, list):
+                    content = "".join(
+                        item.get("text", "") if isinstance(item, dict) else str(item)
+                        for item in content
+                    )
+                if content:
+                    final_content = content
 
             elif kind == "on_tool_start":
                 name = event.get("name", "unknown")
@@ -162,3 +188,9 @@ class TripPlanner:
                 name = event.get("name", "unknown")
                 if name in TOOL_LABELS:
                     pass  # 静默处理，避免刷屏
+
+        # streaming=False 时补发最终回复（通常是完整的旅行计划 JSON）
+        if not streamed_any and final_content:
+            final_content = _TOOL_CALL_PATTERN.sub("", final_content)
+            if final_content.strip():
+                yield final_content

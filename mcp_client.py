@@ -1,9 +1,27 @@
 """
 MCP 客户端管理器 —— 单例模式，全局共享高德地图 MCP 连接。
 """
+import os
+from pathlib import Path
+
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_core.tools import BaseTool
 from config import CONFIG
+
+# 酒店比价服务独立运行环境（fastmcp4 + mcp2），与主进程的 mcp1 客户端隔离
+_HOTEL_RUNTIME = Path(__file__).parent / ".hotel-mcp"
+HOTEL_PYTHON = _HOTEL_RUNTIME / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+HOTEL_SERVER_PATH = Path(__file__).parent / "mcp_hotel_smart_book" / "server.py"
+
+
+def _hotel_command() -> list[str]:
+    if not HOTEL_PYTHON.exists():
+        raise RuntimeError(
+            f"未找到酒店比价运行环境: {HOTEL_PYTHON}。"
+            "请先在 travel-agent 目录执行: "
+            "python -m venv .hotel-mcp && .hotel-mcp/Scripts/python -m pip install fastmcp"
+        )
+    return [str(HOTEL_PYTHON), str(HOTEL_SERVER_PATH)]
 
 
 class McpClientManager:
@@ -15,7 +33,7 @@ class McpClientManager:
     保证客户端不重复初始化
 
     职责：
-      1. 管理与阿里百炼 MCP 服务器的连接
+      1. 管理与高德开放平台 MCP 服务器的连接
       2. 按领域（poi/weather/route）分发工具子集
       3. 缓存已加载工具，避免重复请求
 
@@ -45,13 +63,16 @@ class McpClientManager:
     async def _get_client(self) -> MultiServerMCPClient:
         """懒加载 MCP 客户端"""
         if self._client is None:
+            hotel_cmd = _hotel_command()
             self._client = MultiServerMCPClient({
                 "amap-server": {
                     "transport": CONFIG.mcp_transport,
-                    "url": CONFIG.mcp_url,
-                    "headers": {
-                        "Authorization": f"Bearer {CONFIG.api_key}"
-                    }
+                    "url": CONFIG.map_mcp_url(),
+                },
+                "hotel-server": {
+                    "transport": "stdio",
+                    "command": hotel_cmd[0],
+                    "args": hotel_cmd[1:],
                 }
             })
         return self._client
@@ -71,7 +92,22 @@ class McpClientManager:
         """按领域获取工具子集"""
         all_tools = await self.get_all_tools()
         target_names = set(CONFIG.tool_domains.get(domain, []))
-        return [t for t in all_tools if t.name in target_names]
+
+        def prefix_match(name: str) -> bool:
+            return any(name == target or name.startswith(target) or target.startswith(name)
+                       for target in target_names)
+
+        # 高德官方/旧百炼工具名可能略有差异：先精确/前缀匹配，未命中再按关键字兜底
+        matched = [t for t in all_tools if prefix_match(t.name)]
+        if not matched:
+            fallback_keywords = {
+                "poi":     ("search",),
+                "weather": ("weather",),
+                "route":   ("direction", "bicycling", "cycling"),
+                "hotel":   ("search", "calendar", "advisor"),
+            }.get(domain, ())
+            matched = [t for t in all_tools if any(k in t.name for k in fallback_keywords)]
+        return matched
 
     # ==================== 生命周期 ====================
 

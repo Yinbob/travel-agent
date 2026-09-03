@@ -1,8 +1,10 @@
 """智能旅行 & 酒店比价助手 — Streamlit Web 界面。"""
 import asyncio
 import calendar
+import html
 import json
 import re
+import traceback
 import urllib.parse
 from datetime import date, timedelta
 
@@ -23,8 +25,11 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ---- CSS 样式与动效 ----
-st.markdown("""
+# ---------------------------------------------------------------------------
+# 旧版多层主题样式保留在源码中仅供追溯，已不再注入页面。
+# 当前全部生效样式统一维护在 assets/travel_style.css。
+# ---------------------------------------------------------------------------
+_LEGACY_CSS = """
 <style>
     /* ===== 动效 ===== */
     @keyframes fadeInUp {
@@ -117,55 +122,710 @@ st.markdown("""
         box-shadow: 0 4px 12px rgba(74, 144, 217, .35);
     }
 
-    /* ===== 行程日历 ===== */
-    .trip-cal {
-        width: 100%; border-collapse: separate; border-spacing: 6px;
-        table-layout: fixed; margin: .25rem 0;
+    /* ===== 月历标题 ===== */
+    .cal-month-label { font-size: 1.2rem; font-weight: 700; color: #1565C0; }
+
+    /* ===== 景点图墙：多图并排，悬停横向展开并显示详情 ===== */
+    .spot-strip {
+        display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch;
+        margin: .6rem 0 .25rem;
     }
-    .trip-cal th {
-        font-size: .9rem; color: #78909C; font-weight: 600;
-        text-align: center; padding-bottom: 2px;
+    .spot-tile {
+        position: relative; flex: 1 1 0; min-width: 150px; height: 230px;
+        border-radius: 12px; overflow: hidden; cursor: pointer;
+        background: linear-gradient(135deg, #546E7A, #78909C);
+        box-shadow: 0 2px 6px rgba(0, 0, 0, .10);
+        transition: flex-grow .35s ease, box-shadow .3s ease;
     }
-    .cal-cell {
-        height: 108px; vertical-align: top; border-radius: 10px;
-        background: #FAFAFA; border: 1px solid #ECEFF1; padding: 6px 4px;
-        text-align: center; overflow: hidden;
+    .spot-tile:hover, .spot-tile:focus-visible {
+        flex-grow: 5; z-index: 2; outline: none;
+        box-shadow: 0 10px 24px rgba(0, 0, 0, .28);
     }
-    .cal-cell.weekend { background: #FFF8F0; border-color: #FFE8CC; }
-    .cal-cell.outside { background: transparent; border-color: transparent; }
-    .cal-num { margin: 2px 0 4px; }
-    .cal-daynum {
-        display: inline-flex; align-items: center; justify-content: center;
-        min-width: 30px; height: 30px; border-radius: 50%;
-        font-weight: 600; color: #455A64; font-size: .95rem;
+    .spot-tile > img {
+        position: absolute; inset: 0; width: 100%; height: 100%;
+        object-fit: cover; display: block;
     }
-    .cal-daynum.dim { color: #CFD8DC; font-weight: 500; }
-    .cal-cell.trip { background: #E3F2FD; border-color: #90CAF9; }
-    .cal-cell.trip:hover .cal-daynum { background: #B3E5FC; }
-    .cal-cell.trip.selected { border: 2px solid #29B6F6; background: #E1F5FE; }
-    .cal-cell.trip.selected .cal-daynum {
-        background: #29B6F6; color: #fff;
-        box-shadow: 0 2px 8px rgba(41, 182, 246, .45);
+    .spot-tile.noimg .spot-place {
+        position: absolute; inset: 0;
+        display: flex; flex-direction: column; align-items: center;
+        justify-content: center; gap: 6px; text-align: center;
+        color: #ECEFF1; font-size: .9rem; padding: 10px;
     }
-    .cal-link { display: block; text-decoration: none; color: inherit; height: 100%; }
-    .cal-badge {
-        display: inline-block; background: #1565C0; color: #fff;
-        border-radius: 999px; font-size: .7rem; padding: 1px 8px;
-        white-space: nowrap;
+    .spot-cap {
+        position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
+        padding: 22px 10px 8px; text-align: left; pointer-events: none;
+        color: #fff; font-size: .9rem; font-weight: 600;
+        background: linear-gradient(transparent, rgba(0, 0, 0, .62));
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        transition: opacity .2s ease;
     }
-    .cal-cell.trip.selected .cal-badge { background: #0288D1; }
-    .cal-desc {
-        font-size: .76rem; color: #263238; margin-top: 4px; line-height: 1.3;
-        display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-        overflow: hidden;
+    .spot-tile:hover .spot-cap, .spot-tile:focus-visible .spot-cap { opacity: 0; }
+    .spot-pin {
+        position: absolute; left: 50%; top: 44%; z-index: 2;
+        width: 12px; height: 12px; transform: translateX(-50%);
+        background: #f44336; border: 3px solid #fff; border-radius: 50%;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, .4);
+        transition: opacity .2s ease;
     }
-    .cal-meta {
-        font-size: .7rem; color: #607D8B; margin-top: 3px;
+    .spot-pin::after {
+        content: ""; position: absolute; left: 50%; top: 100%;
+        width: 2px; height: 10px; margin-left: -1px; background: #f44336;
+    }
+    .spot-tile:hover .spot-pin, .spot-tile:focus-visible .spot-pin { opacity: 0; }
+    .spot-detail {
+        position: absolute; inset: 0; z-index: 1;
+        display: flex; flex-direction: column; justify-content: flex-end;
+        padding: 12px 12px 10px; color: #fff; pointer-events: none;
+        background: linear-gradient(to top,
+            rgba(0, 0, 0, .90) 0%, rgba(0, 0, 0, .66) 58%,
+            rgba(0, 0, 0, .28) 100%);
+        opacity: 0; transition: opacity .25s ease .1s;
+    }
+    .spot-tile:hover .spot-detail, .spot-tile:focus-visible .spot-detail {
+        opacity: 1;
+    }
+    .spot-detail h5 {
+        margin: 0 0 3px; padding: 0; font-size: 1rem; line-height: 1.3;
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
-    .cal-month-label { font-size: 1.2rem; font-weight: 700; color: #1565C0; }
+    .spot-meta {
+        font-size: .78rem; color: #E1F5FE; margin-bottom: 3px;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .spot-addr {
+        font-size: .75rem; color: #B0BEC5; margin-bottom: 5px;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .spot-desc {
+        font-size: .8rem; line-height: 1.45; color: #ECEFF1;
+        max-height: 6.2em; overflow: auto;
+        scrollbar-width: thin;
+    }
+
+    /* ===== 简约苹果风格（全局覆写） ===== */
+    :root {
+        --apple-bg: #f5f5f7;
+        --apple-card: rgba(255, 255, 255, .82);
+        --apple-text: #1d1d1f;
+        --apple-sub: #6e6e73;
+        --apple-blue: #0071e3;
+        --apple-blue-soft: #e8f2ff;
+        --apple-border: rgba(0, 0, 0, .08);
+        --apple-shadow: 0 1px 2px rgba(0, 0, 0, .04), 0 12px 32px rgba(0, 0, 0, .06);
+    }
+    html, body, section.main, [class*="css"] {
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+                     "SF Pro Display", "PingFang SC", "Helvetica Neue",
+                     "Microsoft YaHei", "Segoe UI", sans-serif !important;
+    }
+    [data-testid="stAppViewContainer"] {
+        background:
+            radial-gradient(1200px 600px at 15% -10%, rgba(0, 113, 227, .08), transparent 60%),
+            radial-gradient(1000px 500px at 110% 10%, rgba(90, 200, 250, .10), transparent 55%),
+            var(--apple-bg);
+    }
+    [data-testid="stHeader"] { background: transparent; }
+    [data-testid="stSidebar"] { display: none; }
+    section.main > div.block-container {
+        max-width: 1180px;
+        padding-top: 2.2rem;
+        padding-bottom: 4rem;
+    }
+    section.main h1, section.main h2, section.main h3,
+    section.main h4, section.main h5 {
+        color: var(--apple-text);
+        letter-spacing: -.01em;
+        font-weight: 650;
+    }
+    section.main p, section.main span, section.main div, section.main label {
+        color: var(--apple-text);
+    }
+
+    .main-header {
+        border-bottom: none;
+        text-align: center;
+        font-size: 2.15rem;
+        font-weight: 700;
+        letter-spacing: -.02em;
+        color: var(--apple-text);
+        margin: .2rem auto 1.5rem;
+        padding: 0 0 .3rem;
+        background: none;
+        -webkit-text-fill-color: initial;
+    }
+    .plan-title {
+        color: var(--apple-text);
+        font-weight: 700;
+        font-size: 1.5rem;
+        letter-spacing: -.015em;
+    }
+    .day-header { color: #111; border-bottom-color: rgba(0, 0, 0, .08); }
+    .cal-month-label { color: var(--apple-blue); }
+
+    .weather-card, .result-card, .hotel-card, .budget-card {
+        background: var(--apple-card);
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        border: 1px solid var(--apple-border);
+        border-radius: 18px;
+        color: var(--apple-text);
+        box-shadow: var(--apple-shadow);
+    }
+    .weather-card b { color: var(--apple-blue); }
+    .result-card { border-left: none; }
+    .hotel-card { border-left: none; }
+
+    .stButton > button, .stDownloadButton > button, .stLinkButton > a {
+        border-radius: 980px;
+        font-weight: 600;
+        transition: transform .18s ease, box-shadow .18s ease, opacity .18s ease;
+    }
+    .stButton > button[kind="primary"],
+    .stDownloadButton > button {
+        background: var(--apple-blue);
+        border: none;
+        color: #fff;
+        box-shadow: 0 4px 14px rgba(0, 113, 227, .28);
+    }
+    .stButton > button[kind="primary"]:hover,
+    .stDownloadButton > button:hover {
+        background: #0077ed;
+        transform: translateY(-1px);
+        box-shadow: 0 6px 20px rgba(0, 113, 227, .34);
+    }
+    .stButton > button:active, .stDownloadButton > button:active {
+        transform: scale(.97);
+    }
+
+    [data-testid="stTextInput"] input,
+    [data-testid="stTextArea"] textarea,
+    [data-testid="stDateInput"] input,
+    [data-testid="stNumberInput"] input,
+    [data-testid="stSelectbox"] > div > div {
+        background: rgba(255, 255, 255, .92);
+        border: 1px solid rgba(0, 0, 0, .10) !important;
+        border-radius: 12px;
+        color: var(--apple-text);
+    }
+    [data-testid="stCheckbox"] label {
+        background: rgba(255, 255, 255, .8);
+        border: 1px solid rgba(0, 0, 0, .06);
+        border-radius: 12px;
+        padding: .35rem .7rem;
+        transition: transform .15s ease, box-shadow .15s ease;
+    }
+    [data-testid="stCheckbox"] label:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 3px 10px rgba(0, 0, 0, .06);
+    }
+
+    [data-testid="stExpander"] {
+        background: var(--apple-card);
+        border: 1px solid var(--apple-border);
+        border-radius: 20px;
+        box-shadow: var(--apple-shadow);
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        overflow: hidden;
+        margin-bottom: .8rem;
+    }
+    [data-testid="stExpander"] summary {
+        font-weight: 650;
+        padding: .2rem .2rem;
+    }
+
+    [data-testid="stSegmentedControl"] {
+        background: rgba(255, 255, 255, .78);
+        border: 1px solid var(--apple-border);
+        border-radius: 999px;
+        padding: 4px;
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        width: fit-content;
+        margin: 0 auto;
+    }
+    [data-testid="stSegmentedControl"] button {
+        border: none;
+        border-radius: 999px;
+        color: var(--apple-sub);
+        font-weight: 600;
+        transition: all .2s ease;
+    }
+    [data-testid="stSegmentedControl"] button[aria-checked="true"] {
+        background: #fff;
+        color: var(--apple-text);
+        box-shadow: 0 2px 8px rgba(0, 0, 0, .10);
+    }
+
+    [data-testid="stProgress"] > div > div {
+        background: rgba(0, 0, 0, .07);
+        border-radius: 999px;
+        overflow: hidden;
+    }
+    [data-testid="stProgress"] > div > div > div {
+        background: linear-gradient(90deg, var(--apple-blue), #5ac8fa);
+        border-radius: 999px;
+        transition: width .4s ease;
+    }
+    [data-testid="stStatusWidget"] {
+        border-radius: 18px;
+        overflow: hidden;
+        background: var(--apple-card);
+        border: 1px solid var(--apple-border);
+    }
+
+    .fade-in { animation: fadeInUp .5s cubic-bezier(.22, .61, .36, 1) both; }
+
+    /* ===== 单张景点图：点击开关，向下展开完整图片并显示详情 ===== */
+    .spot-toggle {
+        display: block;
+        cursor: pointer;
+    }
+    .spot-toggle-input {
+        position: absolute;
+        opacity: 0;
+        width: 1px;
+        height: 1px;
+        pointer-events: none;
+    }
+    .spot-tile.reveal {
+        flex: 1 1 auto;
+        align-self: flex-start;
+        min-width: 0;
+        width: 100%;
+        interpolate-size: allow-keywords;
+        height: 230px;
+        max-height: none;
+        transition: height .6s cubic-bezier(.22, .61, .36, 1),
+                    box-shadow .3s ease;
+    }
+    .spot-tile.reveal > img {
+        position: relative;
+        width: 100%;
+        height: auto;
+        object-fit: initial;
+    }
+    /* 勾选（点击图片）后：完整展开、隐藏名称条、显示详情层 */
+    .spot-toggle-input:checked + .spot-tile.reveal {
+        height: auto;
+    }
+    .spot-toggle-input:checked + .spot-tile.reveal .spot-cap { opacity: 0; }
+    .spot-toggle-input:checked + .spot-tile.reveal .spot-detail { opacity: 1; }
+    .spot-toggle-input:not(:checked) + .spot-tile.reveal:hover .spot-cap {
+        opacity: 1;
+    }
+    .spot-toggle-input:not(:checked) + .spot-tile.reveal:hover .spot-detail {
+        opacity: 0;
+    }
+    .spot-toggle-input:focus-visible + .spot-tile.reveal {
+        outline: 2px solid rgba(184, 148, 90, .85);
+        outline-offset: 2px;
+    }
+    @supports not (interpolate-size: allow-keywords) {
+        .spot-tile.reveal {
+            height: auto;
+            max-height: 230px;
+            transition: max-height .6s cubic-bezier(.22, .61, .36, 1),
+                        box-shadow .3s ease;
+        }
+        .spot-toggle-input:checked + .spot-tile.reveal {
+            max-height: 1200px;
+        }
+    }
+    .spot-strip.single { display: block; }
+    .spot-strip.single .spot-toggle { width: 100%; }
+
+    /* ===== 高级典雅主题（墨绿 × 暖金 × 象牙白） ===== */
+    :root {
+        --lux-bg: #f7f3ea;
+        --lux-bg-soft: #fdfbf5;
+        --lux-card: rgba(255, 253, 248, .92);
+        --lux-ink: #22302a;
+        --lux-ink-soft: #5c685f;
+        --lux-green: #1d4a3d;
+        --lux-green-deep: #12342c;
+        --lux-gold: #b8945a;
+        --lux-gold-soft: #e7d8b8;
+        --lux-line: rgba(29, 74, 61, .13);
+        --lux-shadow: 0 2px 6px rgba(46, 53, 44, .04),
+                       0 18px 44px rgba(46, 53, 44, .08);
+    }
+    [data-testid="stAppViewContainer"] {
+        background:
+            radial-gradient(1100px 520px at 88% -10%, rgba(184, 148, 90, .12), transparent 62%),
+            radial-gradient(900px 600px at -8% 8%, rgba(29, 74, 61, .10), transparent 58%),
+            var(--lux-bg);
+    }
+    html, body, section.main, [class*="css"] {
+        font-family: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text",
+                     "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif !important;
+    }
+    .main-header {
+        font-family: "Playfair Display", "Songti SC", "STSong", "Noto Serif SC",
+                     Georgia, serif;
+        text-align: center;
+        font-size: 2.35rem;
+        letter-spacing: .04em;
+        margin: .2rem auto .35rem;
+        background: linear-gradient(92deg, var(--lux-green-deep), var(--lux-green),
+                                    var(--lux-gold));
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+        -webkit-text-stroke: .4px rgba(29, 74, 61, .06);
+    }
+    .plan-title {
+        color: var(--lux-green-deep);
+        font-weight: 600;
+        letter-spacing: .01em;
+        font-size: 1.55rem;
+    }
+    .day-header {
+        color: var(--lux-green);
+        border-bottom: 1px solid rgba(184, 148, 90, .45);
+        font-weight: 650;
+    }
+    .cal-month-label { color: var(--lux-green); font-weight: 650; }
+
+    .weather-card, .result-card, .hotel-card, .budget-card {
+        background: var(--lux-card);
+        border: 1px solid var(--lux-line);
+        border-radius: 16px;
+        color: var(--lux-ink);
+        box-shadow: var(--lux-shadow);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+    }
+    .weather-card b, .weather-card b { color: var(--lux-green); }
+    .result-card { border-left: 3px solid var(--lux-gold); }
+    .hotel-card { border-left: 3px solid var(--lux-green); }
+
+    /* 左侧栏 —— 深色雅致面板 */
+    [data-testid="stSidebar"] {
+        display: block;
+        background:
+            radial-gradient(600px 400px at 20% -10%, rgba(184, 148, 90, .16), transparent 60%),
+            linear-gradient(180deg, #152a23, #0f1f1a);
+        border-right: 1px solid rgba(184, 148, 90, .25);
+    }
+    [data-testid="stSidebar"] > div {
+        background: transparent;
+    }
+    [data-testid="stSidebar"] h1,
+    [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3,
+    [data-testid="stSidebar"] h4,
+    [data-testid="stSidebar"] h5 {
+        color: var(--lux-gold-soft);
+        letter-spacing: .05em;
+        font-weight: 600;
+    }
+    [data-testid="stSidebar"] p,
+    [data-testid="stSidebar"] span,
+    [data-testid="stSidebar"] div,
+    [data-testid="stSidebar"] label,
+    [data-testid="stSidebar"] small,
+    [data-testid="stSidebar"] .stCaption,
+    [data-testid="stSidebar"] [data-testid="stCaptionContainer"] p {
+        color: #e7e0cf;
+    }
+    [data-testid="stSidebar"] hr {
+        border-color: rgba(231, 224, 207, .18);
+    }
+    .sidebar-brand {
+        font-family: "Playfair Display", "Songti SC", "STSong", Georgia, serif;
+        font-size: 1.08rem;
+        font-weight: 600;
+        letter-spacing: .05em;
+        color: #f3ead2;
+        padding: .35rem 0 .25rem;
+        border-bottom: 1px solid rgba(184, 148, 90, .35);
+        margin-bottom: .8rem;
+    }
+    [data-testid="stSidebar"] .stRadio > label,
+    [data-testid="stSidebar"] [role="radiogroup"] label {
+        color: #e7e0cf;
+        background: rgba(255, 255, 255, .06);
+        border: 1px solid rgba(231, 224, 207, .12);
+        border-radius: 12px;
+        padding: .45rem .75rem;
+        margin-bottom: .35rem;
+        transition: all .18s ease;
+    }
+    [data-testid="stSidebar"] [role="radiogroup"] label:hover {
+        background: rgba(255, 255, 255, .12);
+        transform: translateX(2px);
+    }
+    [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
+        background: rgba(184, 148, 90, .18);
+        border-color: rgba(184, 148, 90, .55);
+    }
+    [data-testid="stSidebar"] input,
+    [data-testid="stSidebar"] textarea,
+    [data-testid="stSidebar"] [data-testid="stSelectbox"] > div > div,
+    [data-testid="stSidebar"] [data-testid="stNumberInput"] input,
+    [data-testid="stSidebar"] [data-testid="stDateInput"] input {
+        background: rgba(255, 255, 255, .08) !important;
+        border: 1px solid rgba(231, 224, 207, .18) !important;
+        color: #f6f1e3 !important;
+        border-radius: 10px !important;
+    }
+    [data-testid="stSidebar"] input::placeholder,
+    [data-testid="stSidebar"] textarea::placeholder {
+        color: rgba(231, 224, 207, .55) !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stDateInput"] svg,
+    [data-testid="stSidebar"] [data-testid="stNumberInput"] svg,
+    [data-testid="stSidebar"] [data-testid="stSelectbox"] svg {
+        color: #d9cba8 !important;
+    }
+    [data-testid="stSidebar"] .stCheckbox label {
+        background: transparent;
+        border: none;
+        color: #e7e0cf;
+        padding: .2rem .1rem;
+    }
+    [data-testid="stSidebar"] .stCheckbox label:hover {
+        background: transparent;
+        transform: none;
+    }
+    [data-testid="stSidebar"] .stSlider [data-testid="stSliderThumbValue"] {
+        color: #f6f1e3;
+    }
+
+    .stButton > button[kind="primary"],
+    .stDownloadButton > button {
+        background: linear-gradient(135deg, var(--lux-green), #2c5f4c);
+        border: none;
+        color: #faf6ea;
+        box-shadow: 0 6px 18px rgba(29, 74, 61, .24);
+    }
+    .stButton > button[kind="primary"]:hover,
+    .stDownloadButton > button:hover {
+        background: linear-gradient(135deg, #1f5948, #38715c);
+        box-shadow: 0 8px 24px rgba(29, 74, 61, .30);
+    }
+    [data-testid="stProgress"] > div > div > div {
+        background: linear-gradient(90deg, var(--lux-green), var(--lux-gold));
+    }
+
+    /* ===== 恢复经典配色（原蓝色系，覆盖深绿色主题） ===== */
+    :root {
+        --lux-bg: #f2f7fb;
+        --lux-bg-soft: #ffffff;
+        --lux-card: #ffffff;
+        --lux-ink: #263238;
+        --lux-ink-soft: #607D8B;
+        --lux-green: #1565C0;
+        --lux-green-deep: #0D47A1;
+        --lux-gold: #26C6DA;
+        --lux-gold-soft: #E1F5FE;
+        --lux-line: rgba(21, 101, 192, .16);
+        --lux-shadow: 0 2px 8px rgba(13, 71, 161, .06);
+    }
+    [data-testid="stAppViewContainer"] {
+        background:
+            radial-gradient(1100px 520px at 88% -10%, rgba(38, 198, 218, .10), transparent 62%),
+            radial-gradient(900px 600px at -8% 8%, rgba(21, 101, 192, .08), transparent 58%),
+            #f2f7fb;
+    }
+    .main-header {
+        background: linear-gradient(90deg, #4A90D9, #26C6DA);
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+        -webkit-text-stroke: 0;
+    }
+    .plan-title { color: #2E7D32; }
+    .day-header { color: #1565C0; border-bottom-color: #BBDEFB; }
+    .cal-month-label { color: #1565C0; }
+
+    .weather-card {
+        background: #E3F2FD;
+        border-color: #BBDEFB;
+        color: #263238;
+        box-shadow: 0 2px 10px rgba(21, 101, 192, .10);
+    }
+    .weather-card b { color: #1565C0; }
+    .budget-card {
+        background: #FFF8E1;
+        border-color: #FFE082;
+        color: #4e342e;
+    }
+    .result-card {
+        background: #ffffff;
+        border-left: 4px solid #4A90D9;
+        color: #1a1a1a;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, .06);
+    }
+    .hotel-card {
+        background: #ffffff;
+        border-left: 4px solid #2E7D32;
+        color: #1a1a1a;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, .06);
+    }
+
+    /* 左侧栏恢复为浅色经典样式 */
+    [data-testid="stSidebar"] {
+        display: block;
+        background: linear-gradient(180deg, #ffffff, #eef5fb);
+        border-right: 1px solid rgba(21, 101, 192, .16);
+    }
+    [data-testid="stSidebar"] h1,
+    [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3,
+    [data-testid="stSidebar"] h4,
+    [data-testid="stSidebar"] h5 {
+        color: #1565C0;
+    }
+    [data-testid="stSidebar"] p,
+    [data-testid="stSidebar"] span,
+    [data-testid="stSidebar"] div,
+    [data-testid="stSidebar"] label,
+    [data-testid="stSidebar"] small,
+    [data-testid="stSidebar"] [data-testid="stCaptionContainer"] p {
+        color: #263238;
+    }
+    .sidebar-brand {
+        color: #1565C0;
+        border-bottom-color: #90CAF9;
+    }
+    [data-testid="stSidebar"] [role="radiogroup"] label {
+        color: #263238;
+        background: #ffffff;
+        border-color: #d0d9e4;
+    }
+    [data-testid="stSidebar"] [role="radiogroup"] label:hover {
+        background: #f4f9fd;
+        transform: none;
+    }
+    [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
+        background: #E3F2FD;
+        border-color: #90CAF9;
+    }
+    [data-testid="stSidebar"] input,
+    [data-testid="stSidebar"] textarea,
+    [data-testid="stSidebar"] [data-testid="stSelectbox"] > div > div,
+    [data-testid="stSidebar"] [data-testid="stNumberInput"] input,
+    [data-testid="stSidebar"] [data-testid="stDateInput"] input {
+        background: #ffffff !important;
+        border-color: #d0d9e4 !important;
+        color: #263238 !important;
+    }
+    [data-testid="stSidebar"] input::placeholder,
+    [data-testid="stSidebar"] textarea::placeholder {
+        color: #90a4ae !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stDateInput"] svg,
+    [data-testid="stSidebar"] [data-testid="stNumberInput"] svg,
+    [data-testid="stSidebar"] [data-testid="stSelectbox"] svg {
+        color: #1565C0 !important;
+    }
+    [data-testid="stSidebar"] .stCheckbox label { color: #263238; }
+
+    .stButton > button[kind="primary"],
+    .stDownloadButton > button {
+        background: linear-gradient(135deg, #1976D2, #4A90D9);
+        color: #fff;
+        box-shadow: 0 6px 18px rgba(25, 118, 210, .24);
+    }
+    .stButton > button[kind="primary"]:hover,
+    .stDownloadButton > button:hover {
+        background: linear-gradient(135deg, #1565C0, #42A5F5);
+    }
+    [data-testid="stProgress"] > div > div > div {
+        background: linear-gradient(90deg, #1976D2, #26C6DA);
+    }
 </style>
-""", unsafe_allow_html=True)
+"""
+
+_APP_STYLE_FILE = Path(__file__).parent / "assets" / "travel_style.css"
+st.markdown(
+    f"<style>\n{_APP_STYLE_FILE.read_text(encoding='utf-8')}</style>",
+    unsafe_allow_html=True,
+)
+
+
+_AMBIENT_GLOW_HTML = """
+<div id="ambient-glow" aria-hidden="true">
+  <div class="ag-wrap ag-w1" data-x="74" data-y="0" data-depth="0.07"><div class="ag-blob ag-c1"></div></div>
+  <div class="ag-wrap ag-w2" data-x="52" data-y="-14" data-depth="0.05"><div class="ag-blob ag-c2"></div></div>
+  <div class="ag-wrap ag-w3" data-x="98" data-y="46" data-depth="0.11"><div class="ag-blob ag-c3"></div></div>
+  <div class="ag-wrap ag-w4" data-x="66" data-y="88" data-depth="0.09"><div class="ag-blob ag-c4"></div></div>
+  <div class="ag-wrap ag-w5" data-x="36" data-y="62" data-depth="0.13"><div class="ag-blob ag-c5"></div></div>
+</div>
+<script>
+(function () {
+  var root = document.getElementById("ambient-glow");
+  if (!root) return;
+  if (typeof root._agCleanup === "function") {
+    try { root._agCleanup(); } catch (e) {}
+  }
+  var wraps = Array.prototype.slice.call(root.querySelectorAll(".ag-wrap"));
+  if (!wraps.length) return;
+  var targets = wraps.map(function () { return { x: 0, y: 0 }; });
+  var currents = wraps.map(function () { return { x: 0, y: 0 }; });
+  var vw = window.innerWidth, vh = window.innerHeight, left = 0;
+  function measure() {
+    vw = window.innerWidth;
+    vh = window.innerHeight;
+    var sb = document.querySelector('[data-testid="stSidebar"]');
+    left = sb ? sb.getBoundingClientRect().right : 0;
+  }
+  measure();
+  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var onMove = function (e) {
+    if (!root.isConnected) {
+      document.removeEventListener("mousemove", onMove);
+      return;
+    }
+    var mx = e.clientX < left + 12 ? left + 12 : e.clientX;
+    var my = e.clientY;
+    for (var i = 0; i < wraps.length; i++) {
+      var w = wraps[i];
+      var k = parseFloat(w.getAttribute("data-depth")) || 0.08;
+      var bx = (parseFloat(w.getAttribute("data-x")) || 50) / 100 * vw;
+      var by = (parseFloat(w.getAttribute("data-y")) || 50) / 100 * vh;
+      targets[i].x = (mx - bx) * k;
+      targets[i].y = (my - by) * k;
+    }
+  };
+  function cleanup() {
+    if (raf) cancelAnimationFrame(raf);
+    raf = null;
+    document.removeEventListener("mousemove", onMove);
+    window.removeEventListener("resize", onResize);
+  }
+  var onResize = function () { measure(); };
+  var raf = null;
+  function tick() {
+    if (!root.isConnected) { cleanup(); return; }
+    for (var i = 0; i < wraps.length; i++) {
+      currents[i].x += (targets[i].x - currents[i].x) * 0.075;
+      currents[i].y += (targets[i].y - currents[i].y) * 0.075;
+      var t = "translate3d(" + currents[i].x.toFixed(2) + "px," + currents[i].y.toFixed(2) + "px,0)";
+      if (wraps[i].style.transform !== t) wraps[i].style.transform = t;
+    }
+    raf = requestAnimationFrame(tick);
+  }
+  root._agCleanup = cleanup;
+  document.addEventListener("mousemove", onMove, { passive: true });
+  window.addEventListener("resize", onResize);
+  if (!reduce) raf = requestAnimationFrame(tick);
+})();
+</script>
+"""
+
+
+def _inject_ambient_glow():
+    """规划结果生成前，在主内容区注入随鼠标流动的多彩泛光背景。
+
+    通过 st.html(unsafe_allow_javascript=True) 注入固定于视口的装饰层：
+    - 仅在使用旅行规划模式且尚未产出规划结果时调用；
+    - 泛光层 pointer-events: none，不拦截任何交互；
+    - 遵循 prefers-reduced-motion，关闭漂移动画与鼠标跟随。
+    """
+    st.html(_AMBIENT_GLOW_HTML, unsafe_allow_javascript=True)
 
 
 # ==================== 通用辅助 ====================
@@ -179,6 +839,54 @@ def _signal_badge(signal: str) -> str:
     else:
         cls = "signal-red"
     return f'<span class="signal-badge {cls}">{signal}</span>'
+
+
+def _esc(value) -> str:
+    """HTML 转义，用于拼接 unsafe_allow_html 文本与属性。"""
+    return html.escape("" if value is None else str(value), quote=True)
+
+
+def _short_name(name: str, limit: int = 5) -> str:
+    """将单个景点名截断为约 limit 个字符，超长时补省略号。"""
+    name = (name or "").strip()
+    if len(name) <= limit:
+        return name
+    return name[:limit] + "…"
+
+
+def _spots_summary(day: dict) -> str:
+    """生成日历格子的紧凑景点名摘要：最多 2 个景点，每个约 5 字。"""
+    names = [a.get("name", "") for a in day.get("attractions", [])
+             if str(a.get("name", "") or "").strip()]
+    if not names:
+        return ""
+    parts = [_short_name(n) for n in names[:2]]
+    text = " · ".join(parts)
+    if len(names) > 2:
+        text = text.rstrip("…") + "…"
+    return text
+
+
+def _progress_chip_html(value: float, message: str, collected: int = 0, state: str = "running") -> str:
+    """生成进度提示芯片：左侧呼吸圆点 + 当前模块文字，右侧模块计数与百分比。"""
+    pct = max(0, min(100, int(round(value * 100))))
+    state_cls = state if state in {"done", "error"} else "running"
+    if state == "done":
+        text = f"✅ {_esc(message)}"
+        meta = "规划完成"
+    elif state == "error":
+        text = f"❌ {_esc(message)}"
+        meta = "生成已停止"
+    else:
+        text = f"{_esc(message)}"
+        prefix = f"模块 {collected} · " if collected else "初始化 · "
+        meta = f"{prefix}{pct}%"
+    return (
+        f'<div class="gen-chip {state_cls}">'
+        f'<span class="gen-chip-main"><span class="gen-orb"></span>'
+        f'<span class="gen-chip-text">{text}</span></span>'
+        f'<span class="gen-chip-meta">{meta}</span></div>'
+    )
 
 
 def _exception_leaves(exc: BaseException) -> list[str]:
@@ -201,6 +909,17 @@ def _exception_leaves(exc: BaseException) -> list[str]:
     if not messages:
         messages.append(str(exc).strip() or type(exc).__name__)
     return messages[:3]
+
+
+def _is_broken_resource_exc(exc: BaseException) -> bool:
+    """判断是否为可自动重连恢复的 MCP 连接中断类错误。"""
+    subs = getattr(exc, "exceptions", None)
+    if subs:
+        return any(_is_broken_resource_exc(sub) for sub in subs)
+    name = type(exc).__name__
+    return name in {"BrokenResourceError", "ClosedResourceError"} or isinstance(
+        exc, (ConnectionResetError, BrokenPipeError)
+    )
 
 
 def _render_advice(advice: dict, delay: int = 1):
@@ -340,11 +1059,28 @@ def _render_advisor_result(data: dict):
     _render_advice(data.get("advice"))
 
 
+def _feature_card_grid(features: list[tuple[str, str, str]]) -> None:
+    """把功能简介渲染成一排毛玻璃特性卡片。"""
+    cols = st.columns(len(features))
+    for i, (icon, title, desc) in enumerate(features):
+        with cols[i]:
+            st.markdown(
+                f'<div class="feature-card fade-in d{min(i + 1, 6)}">'
+                f'<div class="feature-icon">{icon}</div>'
+                f'<div class="feature-title">{title}</div>'
+                f'<div class="feature-desc">{desc}</div>'
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+
 # ==================== 酒店比价模式 ====================
 
 def hotel_mode():
+    # ============ 左侧参数面板 ============
     with st.sidebar:
-        st.markdown("### 🏨 比价参数")
+        st.markdown("##### ✦ 比价参数")
+
         h_city = st.text_input("📍 城市", placeholder="例如: 上海、北京...")
         col1, col2 = st.columns(2)
         with col1:
@@ -407,17 +1143,15 @@ def hotel_mode():
     # ---- 结果展示 ----
     hotel_result = st.session_state.get("hotel_result")
     if hotel_result is None:
-        st.info("👈 在左侧填写比价参数，然后选择查询方式")
-        col_a, col_b, col_c = st.columns(3)
-        with col_a:
-            st.markdown("##### 🔍 多平台实时比价")
-            st.caption("飞猪 + 途牛 + RG + 同程四源实时对比，找到最低价")
-        with col_b:
-            st.markdown("##### 📅 低价日历")
-            st.caption("一键扫描 7-30 天价格洼地，找到最便宜的入住日期")
-        with col_c:
-            st.markdown("##### 🧭 订房决策")
-            st.caption("五维度综合判断，输出 🟢订 / 🟡等 / 🔴观望 信号")
+        st.caption("✨ 聚合飞猪、途牛、RG、同程四源价格，支持比价 / 低价日历 / 订房决策")
+        _feature_card_grid([
+            ("🔍", "多平台实时比价",
+             "飞猪 + 途牛 + RG + 同程四源实时对比，找到最低价"),
+            ("📅", "低价日历",
+             "一键扫描 7-30 天价格洼地，找到最便宜的入住日期"),
+            ("🧭", "订房决策",
+             "五维度综合判断，输出 🟢订 / 🟡等 / 🔴观望 信号"),
+        ])
         return
 
     tool, data = hotel_result["tool"], hotel_result["data"]
@@ -432,7 +1166,7 @@ def hotel_mode():
 # ==================== 旅行规划模式 ====================
 
 # ---- 初始化 ----
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def get_planner():
     from config import CONFIG
     from agents.planner import TripPlanner
@@ -493,7 +1227,7 @@ _STATUS_EMOJIS = ["🌤️", "🔍", "📍", "📄", "🚶", "🚗", "🚌", "�
 # ==================== 行程日历 ====================
 
 def _trip_calendar_data(year: int, month: int, day_by_date: dict, selected: int) -> dict:
-    """构建月历数据：行程日带 Day 序号与概述，供可点击日历组件渲染。"""
+    """构建月历数据：行程日带 Day 序号与紧凑景点名，并裁掉首尾无行程的空周。"""
     today = date.today()
     weeks = []
     for week in calendar.Calendar(firstweekday=0).monthdatescalendar(year, month):
@@ -513,18 +1247,95 @@ def _trip_calendar_data(year: int, month: int, day_by_date: dict, selected: int)
                 cell.update({
                     "idx": idx,
                     "selected": idx == selected,
-                    "desc": day.get("description") or "",
+                    "spots": _spots_summary(day),
                     "n": len(day.get("attractions", [])),
                 })
             cells.append(cell)
         weeks.append(cells)
+
+    # 裁剪首尾不含行程日的整周；裁剪为空时回退完整月，保证月历始终可渲染。
+    non_empty = [i for i, week in enumerate(weeks)
+                 if any(c.get("idx") for c in week)]
+    if non_empty:
+        weeks = weeks[non_empty[0]:non_empty[-1] + 1]
     return {"weeks": weeks}
+
+
+def _attraction_strip(attractions: list, plan_city: str) -> str:
+    """把当天景点渲染成一行并排图墙；悬停/聚焦时该图横向展开并显示详情。"""
+    from render import attraction_photo, attraction_map_image
+
+    tiles = []
+    single = len(attractions) == 1
+    for a in attractions:
+        raw_name = str(a.get("name") or "").strip() or "景点"
+        img_url = (a.get("image_url") or "").strip()
+        if not img_url:
+            img_url = (attraction_photo(raw_name, plan_city) or "").strip()
+        is_map = False
+        if not img_url:
+            img_url = (attraction_map_image(a.get("location") or {}) or "").strip()
+            is_map = bool(img_url)
+
+        # 元信息：分类 / 游玩时长 / 门票
+        meta_parts = []
+        if str(a.get("category") or "").strip():
+            meta_parts.append(str(a["category"]).strip())
+        visit_duration = a.get("visit_duration")
+        if isinstance(visit_duration, (int, float)) and visit_duration > 0:
+            meta_parts.append(f"⏱️ {visit_duration:g} 分钟")
+        ticket = a.get("ticket_price")
+        if ticket == 0:
+            meta_parts.append("🆓 免费")
+        elif isinstance(ticket, (int, float)) and ticket > 0:
+            meta_parts.append(f"🎫 ¥{ticket:g}")
+        meta = " · ".join(meta_parts)
+
+        addr = str(a.get("address") or "").strip()
+        desc = str(a.get("description") or "").strip()
+        addr_html = f'<div class="spot-addr">📍 {_esc(addr)}</div>' if addr else ""
+        desc_html = f'<div class="spot-desc">{_esc(desc)}</div>' if desc else ""
+
+        if img_url:
+            media_html = f'<img src="{_esc(img_url)}" alt="{_esc(raw_name)}" loading="lazy">'
+            if is_map:
+                media_html += '<span class="spot-pin"></span>'
+            tile_cls = "spot-tile reveal" if single else "spot-tile"
+        else:
+            media_html = (
+                '<div class="spot-place"><div style="font-size:2.2rem">🏛️</div>'
+                "<div>暂无图片</div></div>"
+            )
+            tile_cls = "spot-tile noimg" + (" single" if single else "")
+
+        hint = "查看介绍与详情" if not img_url else (
+            "点击展开查看完整图片与介绍" if single else "悬停查看完整图片与详情"
+        )
+        keyboard_attrs = "" if single else ' tabindex="0" role="button"'
+        tile_html = (
+            f'<div class="{tile_cls}"{keyboard_attrs} '
+            f'title="{_esc(raw_name)}：{hint}">'
+            f"{media_html}"
+            f'<div class="spot-cap">{_esc(raw_name)}</div>'
+            f'<div class="spot-detail">'
+            f'<h5>{_esc(raw_name)}</h5>'
+            f'<div class="spot-meta">{_esc(meta)}</div>'
+            f"{addr_html}{desc_html}"
+            f"</div></div>"
+        )
+        if single and img_url:
+            tile_html = (
+                '<label class="spot-toggle">'
+                '<input type="checkbox" class="spot-toggle-input" '
+                f'aria-label="{_esc(raw_name)}：点击展开/收起完整图片与介绍">'
+                f"{tile_html}</label>"
+            )
+        tiles.append(tile_html)
+    return f'<div class="spot-strip{" single" if single else ""}">{"".join(tiles)}</div>'
 
 
 def _render_day_details(day: dict, idx: int, plan_city: str):
     """渲染选中日的详细行程（住宿 / 景点 / 餐饮）。"""
-    from render import attraction_photo, attraction_map_image
-
     d = day.get("date", "")[-5:]
     st.markdown(
         f'<div class="day-header fade-in">📅 {d}  Day {idx} · {day.get("description", "")}</div>',
@@ -544,46 +1355,7 @@ def _render_day_details(day: dict, idx: int, plan_city: str):
     attractions = day.get("attractions", [])
     if attractions:
         st.markdown("**🏛️ 景点**")
-        for a in attractions:
-            ticket = a.get("ticket_price", 0)
-            ts = "🆓 免费" if ticket == 0 else f"🎫 ¥{ticket}"
-            with st.container(border=True):
-                name = a.get("name", "景点")
-                img_url = a.get("image_url") or ""
-                if not img_url:
-                    img_url = attraction_photo(name, plan_city) or ""
-                is_map = False
-                if not img_url:
-                    img_url = attraction_map_image(a.get("location") or {}) or ""
-                    is_map = True
-                if img_url:
-                    if is_map:
-                        st.markdown(
-                            f"""
-                            <div style="position:relative;border-radius:8px;overflow:hidden;margin-bottom:.5rem">
-                              <img src="{img_url}" style="width:100%;display:block;border-radius:8px" />
-                              <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-100%)">
-                                <div style="width:14px;height:14px;background:#FF4444;border:3px solid #fff;border-radius:50%;box-shadow:0 2px 6px rgba(0,0,0,.4);animation:pulse 2s infinite"></div>
-                                <div style="width:2px;height:14px;background:#FF4444;margin:-1px auto 0"></div>
-                              </div>
-                              <div style="position:absolute;top:12px;left:12px;background:rgba(255,255,255,.95);color:#c0392b;font-weight:600;padding:3px 10px;border-radius:14px;font-size:.85rem;box-shadow:0 1px 4px rgba(0,0,0,.15)">📍 {name}</div>
-                            </div>
-                            <style>@keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:.4}}}}</style>
-                            """,
-                            unsafe_allow_html=True,
-                        )
-                    else:
-                        st.image(img_url, use_container_width=True)
-                st.markdown(
-                    f"**{name}**  |  {a.get('category', '')}  |  "
-                    f"⏱️ {a.get('visit_duration', 0)}分钟  |  {ts}"
-                )
-                if a.get("address"):
-                    st.caption(f"📍 {a['address']}")
-                a_desc = a.get("description")
-                if a_desc:
-                    st.markdown(f"<div style='color:#555;font-size:.9rem;margin-top:.3rem'>{a_desc}</div>",
-                                unsafe_allow_html=True)
+        st.markdown(_attraction_strip(attractions, plan_city), unsafe_allow_html=True)
 
     # 餐饮
     meals = day.get("meals", [])
@@ -601,9 +1373,19 @@ def _render_day_details(day: dict, idx: int, plan_city: str):
 
 
 def travel_mode():
-    # ============ 侧边栏: 参数输入 ============
+    # ============ 会话初始化 ============
+    if "plan_data" not in st.session_state:
+        st.session_state.plan_data = None
+    if "plan_raw" not in st.session_state:
+        st.session_state.plan_raw = ""
+
+    # 规划结果生成前：主内容区显示多彩泛光背景（Gemini 风格，随鼠标流动）
+    if st.session_state.plan_data is None:
+        _inject_ambient_glow()
+
+    # ============ 左侧参数面板 ============
     with st.sidebar:
-        st.markdown("### 📋 旅行参数")
+        st.markdown("##### ✦ 旅行参数")
 
         city = st.text_input("📍 目的地城市", placeholder="例如: 杭州、成都、三亚...")
 
@@ -615,12 +1397,12 @@ def travel_mode():
 
         if start_date and end_date and end_date >= start_date:
             trip_days = (end_date - start_date).days
-            st.info(f"📌 共计 **{trip_days}** 天")
+            st.caption(f"📌 共计 **{trip_days}** 天")
         elif end_date < start_date:
             st.error("结束日期不能早于开始日期")
 
         st.markdown("---")
-        st.markdown("### 🚗 交通方式")
+        st.markdown("##### ✦ 交通方式")
         transport_options = ["公共交通", "自驾", "打车/网约车", "骑行", "步行"]
         transport_selected = []
         for opt in transport_options:
@@ -628,7 +1410,7 @@ def travel_mode():
                 transport_selected.append(opt)
 
         st.markdown("---")
-        st.markdown("### 🏨 住宿偏好")
+        st.markdown("##### ✦ 住宿偏好")
         hotel_type = st.selectbox(
             "住宿类型",
             ["不限", "经济型酒店", "中档型酒店", "豪华型酒店", "民宿/客栈", "青年旅舍"],
@@ -639,7 +1421,7 @@ def travel_mode():
             hotel_type = ""
 
         st.markdown("---")
-        st.markdown("### 🎯 旅行偏好")
+        st.markdown("##### ✦ 旅行偏好")
         pref_options = ["自然风光", "历史文化", "美食探店", "休闲度假", "艺术展览", "购物逛街", "亲子乐园"]
         pref_selected = []
         for opt in pref_options:
@@ -647,7 +1429,7 @@ def travel_mode():
                 pref_selected.append(opt)
 
         st.markdown("---")
-        st.markdown("### 💬 额外要求")
+        st.markdown("##### ✦ 额外要求")
         extra_requirements = st.text_area(
             "补充说明",
             placeholder="例如: 带老人出行需要轻松行程、想在市中心活动...",
@@ -657,28 +1439,19 @@ def travel_mode():
         st.markdown("---")
         submit_btn = st.button("🚀 开始规划", type="primary", width="stretch")
 
-    # ============ 主区域: 结果展示 ============
-    if "plan_data" not in st.session_state:
-        st.session_state.plan_data = None
-    if "plan_raw" not in st.session_state:
-        st.session_state.plan_raw = ""
-
     # 未开始时的引导页
     if not submit_btn and st.session_state.plan_data is None:
-        st.info("👈 在左侧填写旅行参数，然后点击 **开始规划** 按钮")
-        col_a, col_b, col_c, col_d = st.columns(4)
-        with col_a:
-            st.markdown("##### 🌤️ 实时天气查询")
-            st.caption("接入高德地图 MCP，获取目的地准确天气预报")
-        with col_b:
-            st.markdown("##### 🏛️ 智能景点推荐")
-            st.caption("根据你的偏好，AI 精准匹配最适合的景点和路线")
-        with col_c:
-            st.markdown("##### 🏨 酒店多平台比价")
-            st.caption("飞猪/途牛/RG/同程实时比价，给出订房时机建议")
-        with col_d:
-            st.markdown("##### 📊 预算自动汇总")
-            st.caption("景点门票、餐饮、住宿、交通费用一目了然")
+        st.caption("✨ 一站式智能出行：天气、景点、路线、酒店比价与预算自动生成")
+        _feature_card_grid([
+            ("🌤️", "实时天气查询",
+             "接入高德地图 MCP，获取目的地准确天气预报"),
+            ("🏛️", "智能景点推荐",
+             "根据你的偏好，AI 精准匹配最适合的景点和路线"),
+            ("🏨", "酒店多平台比价",
+             "飞猪 / 途牛 / RG / 同程实时比价，给出订房时机建议"),
+            ("📊", "预算自动汇总",
+             "景点门票、餐饮、住宿、交通费用一目了然"),
+        ])
 
     # 点击按钮后执行
     if submit_btn:
@@ -687,65 +1460,125 @@ def travel_mode():
         elif end_date < start_date:
             st.error("结束日期不能早于开始日期")
         else:
-            with st.status("🤖 AI 正在为您规划旅行方案...", expanded=True) as status:
-                try:
-                    planner = get_planner()
-                    prompt = build_prompt(
-                        city, start_date, end_date,
-                        transport_selected, hotel_type, pref_selected, extra_requirements,
-                    )
-                    from render import parse_plan
+            chip = None
+            progress_bar = None
+            try:
+                planner = get_planner()
+                prompt = build_prompt(
+                    city, start_date, end_date,
+                    transport_selected, hotel_type, pref_selected, extra_requirements,
+                )
+                from render import parse_plan
 
+                def _update_progress(
+                    value: float,
+                    message: str,
+                    collected: int = 0,
+                    state: str = "running",
+                ) -> None:
+                    """同步更新模块提示芯片与纤细进度条。"""
+                    chip.markdown(
+                        _progress_chip_html(value, message, collected, state),
+                        unsafe_allow_html=True,
+                    )
+                    progress_bar.progress(min(max(float(value), 0.0), 1.0))
+
+                chip = st.empty()
+                progress_bar = st.progress(0.02)
+                _update_progress(0.02, "正在初始化生成引擎…", 0)
+
+                tokens: list[str] = []
+                status_lines: list[str] = []
+                module_seen: list[str] = []
+                for attempt in range(2):
                     async def _collect():
                         results = []
+                        module_seen.clear()
+                        status_lines.clear()
                         async for token in planner.stream(prompt):
+                            stripped = token.strip()
+                            if any(
+                                stripped.startswith(emoji)
+                                for emoji in _STATUS_EMOJIS
+                            ):
+                                status_lines.append(stripped)
+                                if stripped not in module_seen:
+                                    module_seen.append(stripped)
+                                    _update_progress(
+                                        min(0.08 + len(module_seen) * 0.065, 0.90),
+                                        stripped,
+                                        len(module_seen),
+                                    )
                             results.append(token)
                         return results
 
-                    tokens = asyncio.run(_collect())
+                    try:
+                        tokens = asyncio.run(_collect())
+                        break
+                    except Exception as exc:
+                        # MCP 连接/会话被服务端或旧事件循环中断时，重建
+                        # 全新的 Planner + MCP 客户端后自动重试一次。
+                        if attempt == 0 and _is_broken_resource_exc(exc):
+                            traceback.print_exc()
+                            st.warning(
+                                "检测到地图/酒店 MCP 连接中断（BrokenResourceError），"
+                                "正在重建连接并自动重试，请稍候…"
+                            )
+                            _update_progress(
+                                0.03,
+                                "MCP 连接中断，正在重建连接并自动重试…",
+                                len(module_seen),
+                            )
+                            from mcp_client import McpClientManager
 
-                    # 分离状态行和内容
-                    full_text = ""
-                    status_lines = []
-                    for token in tokens:
-                        full_text += token
-                        stripped = token.strip()
-                        if any(stripped.startswith(emoji) for emoji in _STATUS_EMOJIS):
-                            status_lines.append(stripped)
+                            McpClientManager.reset()
+                            get_planner.cache_clear()
+                            planner = get_planner()
+                            continue
+                        raise
 
-                    # 展示规划过程
-                    for line in status_lines:
-                        st.write(line)
+                _update_progress(
+                    0.95, "数据已就绪，正在整理最终行程…", len(module_seen)
+                )
 
-                    # 解析并存储
-                    plan = parse_plan(full_text)
-                    if plan is None:
-                        snippet = full_text.strip()
-                        if len(snippet) > 300:
-                            snippet = snippet[:300] + "…"
-                        raise RuntimeError(
-                            "模型未返回可解析的旅行计划 JSON"
-                            + (f"，输出片段：{snippet}" if snippet else "（输出为空）")
-                        )
-                    st.session_state.plan_data = plan
-                    st.session_state.plan_raw = full_text
-                    st.session_state.status_lines = status_lines
-                    st.session_state.selected_day = 1
-                    st.session_state.pop("trip_calendar", None)
+                # 汇总生成内容
+                full_text = "".join(tokens)
 
-                    status.update(label="✅ 旅行计划生成完成！", state="complete", expanded=False)
-                except Exception as e:
-                    status.update(label="❌ 旅行规划失败", state="error", expanded=True)
-                    st.error("生成旅行计划时出错：" + "；".join(_exception_leaves(e)))
-                    st.info(
-                        "可能原因：\n"
-                        "1. 地图服务已切换为高德开放平台官方 MCP，请在 `travel-agent/.env` 配置 `AMAP_MAPS_API_KEY`（Web 服务类型 Key）；\n"
-                        "2. `DASHSCOPE_API_KEY` 缺失、过期或无效（LLM 生成 401/InvalidApiKey）——请同时确认它已配置；\n"
-                        "3. 高德 MCP 端点 `mcp.amap.com` 网络不可达；\n"
-                        "4. 本地酒店比价服务未初始化（报错中如含 `.hotel-mcp`，请执行 `python -m venv .hotel-mcp` 并 `pip install fastmcp`）。"
+                # 解析并存储
+                plan = parse_plan(full_text)
+                if plan is None:
+                    snippet = full_text.strip()
+                    if len(snippet) > 300:
+                        snippet = snippet[:300] + "…"
+                    raise RuntimeError(
+                        "模型未返回可解析的旅行计划 JSON"
+                        + (f"，输出片段：{snippet}" if snippet else "（输出为空）")
                     )
-                else:
-                    st.rerun()
+                st.session_state.plan_data = plan
+                st.session_state.plan_raw = full_text
+                st.session_state.status_lines = status_lines
+                st.session_state.selected_day = 1
+                for state_key in list(st.session_state.keys()):
+                    if state_key.startswith("trip_calendar"):
+                        st.session_state.pop(state_key, None)
+
+                _update_progress(
+                    1.0, "旅行计划生成完成", len(module_seen), state="done"
+                )
+            except Exception as e:
+                traceback.print_exc()
+                if progress_bar is not None:
+                    _update_progress(1.0, "行程生成失败", 0, state="error")
+                st.error("生成旅行计划时出错：" + "；".join(_exception_leaves(e)))
+                st.info(
+                    "可能原因：\n"
+                    "1. 地图服务已切换为高德开放平台官方 MCP，请在 `travel-agent/.env` 配置 `AMAP_MAPS_API_KEY`（Web 服务类型 Key）；\n"
+                    "2. `DASHSCOPE_API_KEY` 缺失、过期或无效（LLM 生成 401/InvalidApiKey）——请同时确认它已配置；\n"
+                    "3. 高德 MCP 端点 `mcp.amap.com` 网络不可达；\n"
+                    "4. 本地酒店比价服务未初始化（报错中如含 `.hotel-mcp`，请执行 `python -m venv .hotel-mcp` 并 `pip install fastmcp`）。"
+                )
+            else:
+                st.rerun()
 
     # ============ 结果展示 ============
     plan = st.session_state.plan_data
@@ -816,30 +1649,56 @@ def travel_mode():
                 day_by_date[dstr] = (i + 1, day)
 
         trip_dates = sorted(day_by_date)
-        try:
-            cal_start = date.fromisoformat(trip_dates[0])
-        except ValueError:
-            cal_start = date.today()
+        months = []
+        for dstr in trip_dates:
+            try:
+                key = (int(dstr[:4]), int(dstr[5:7]))
+            except (IndexError, ValueError):
+                continue
+            if key not in months:
+                months.append(key)
+        if not months:
+            today = date.today()
+            months = [(today.year, today.month)]
 
         selected = st.session_state.get("selected_day", 1)
-        picked = st.session_state.get("trip_calendar")
-        if picked is not None and picked in idx_to_day:
-            selected = picked
-            st.session_state.selected_day = picked
         if selected not in idx_to_day:
             selected = 1
 
-        st.markdown(
-            f'<div class="cal-month-label fade-in">{cal_start.year}年{cal_start.month}月</div>',
-            unsafe_allow_html=True,
-        )
-        trip_calendar(
-            data=_trip_calendar_data(cal_start.year, cal_start.month, day_by_date, selected),
-            key="trip_calendar",
-        )
+        # 比较各月组件返回值与上次渲染的差异，只采用确实发生变化的点击，
+        # 避免旧月份残留值干扰；无变化则沿用当前选中日。
+        prev_returns = st.session_state.get("trip_calendar_prev") or {}
+        picked = None
+        for y, m in months:
+            key_name = f"trip_calendar_{y}_{m}"
+            value = st.session_state.get(key_name)
+            if value is not None and value in idx_to_day and value != prev_returns.get(key_name):
+                if picked is None:
+                    picked = value
+                elif picked != value:
+                    picked = None
+                    break
+        if picked is not None:
+            selected = picked
+            st.session_state.selected_day = picked
+
+        for y, m in months:
+            key_name = f"trip_calendar_{y}_{m}"
+            st.markdown(
+                f'<div class="cal-month-label fade-in">{y}年{m}月</div>',
+                unsafe_allow_html=True,
+            )
+            trip_calendar(
+                data=_trip_calendar_data(y, m, day_by_date, selected),
+                key=key_name,
+            )
         st.caption("💡 点击日历中的行程日期，可在下方查看当天详细行程")
 
         _render_day_details(idx_to_day[selected], selected, plan_city)
+        st.session_state.trip_calendar_prev = {
+            f"trip_calendar_{y}_{m}": st.session_state.get(f"trip_calendar_{y}_{m}")
+            for y, m in months
+        }
 
     # ---- 预算 ----
     budget = plan.get("budget", {})
@@ -908,14 +1767,17 @@ def travel_mode():
 
 # ==================== 主入口 ====================
 
-st.markdown('<div class="main-header">🧳 智能旅行 & 酒店比价助手</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">🧳 智能旅行助手</div>', unsafe_allow_html=True)
 
 with st.sidebar:
-    st.markdown("### ✨ 功能模式")
+    st.markdown('<div class="sidebar-brand">🧳 智能旅行 & 酒店比价</div>',
+                unsafe_allow_html=True)
+    st.markdown("##### ✦ 功能模式")
     mode = st.radio(
         "功能模式",
         ["🧳 智能旅行规划", "🏨 酒店比价"],
         label_visibility="collapsed",
+        key="app_mode",
     )
     st.markdown("---")
 

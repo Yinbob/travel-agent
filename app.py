@@ -748,11 +748,7 @@ st.markdown(
 
 _AMBIENT_GLOW_HTML = """
 <div id="ambient-glow" aria-hidden="true">
-  <div class="ag-wrap ag-w1" data-x="74" data-y="0" data-depth="0.07"><div class="ag-blob ag-c1"></div></div>
-  <div class="ag-wrap ag-w2" data-x="52" data-y="-14" data-depth="0.05"><div class="ag-blob ag-c2"></div></div>
-  <div class="ag-wrap ag-w3" data-x="98" data-y="46" data-depth="0.11"><div class="ag-blob ag-c3"></div></div>
-  <div class="ag-wrap ag-w4" data-x="66" data-y="88" data-depth="0.09"><div class="ag-blob ag-c4"></div></div>
-  <div class="ag-wrap ag-w5" data-x="36" data-y="62" data-depth="0.13"><div class="ag-blob ag-c5"></div></div>
+  <canvas id="ambient-glow-canvas" class="ag-canvas"></canvas>
 </div>
 <script>
 (function () {
@@ -761,69 +757,172 @@ _AMBIENT_GLOW_HTML = """
   if (typeof root._agCleanup === "function") {
     try { root._agCleanup(); } catch (e) {}
   }
-  var wraps = Array.prototype.slice.call(root.querySelectorAll(".ag-wrap"));
-  if (!wraps.length) return;
-  var targets = wraps.map(function () { return { x: 0, y: 0 }; });
-  var currents = wraps.map(function () { return { x: 0, y: 0 }; });
+  var canvas = document.getElementById("ambient-glow-canvas");
+  if (!canvas) return;
+  var ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  var dpr = 1;
   var vw = window.innerWidth, vh = window.innerHeight, left = 0;
+  var homeCX = 0, homeCY = 0;
+
   function measure() {
     vw = window.innerWidth;
     vh = window.innerHeight;
     var sb = document.querySelector('[data-testid="stSidebar"]');
     left = sb ? sb.getBoundingClientRect().right : 0;
+    var paneW = Math.max(vw - left, 320);
+    // 泛光默认静置在右侧内容区上方（类似原版右上角那团光）
+    homeCX = left + paneW * 0.72;
+    homeCY = vh * 0.30;
+    dpr = Math.min(window.devicePixelRatio || 1, 1.75);
+    canvas.width = Math.round(vw * dpr);
+    canvas.height = Math.round(vh * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
   measure();
-  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  var onMove = function (e) {
+
+  var N = 46;
+  var rnd = function (a, b) { return a + Math.random() * (b - a); };
+  var gauss = function () { return (Math.random() + Math.random() + Math.random() - 1.5) / 1.5; };
+  var parts = [];
+  var spreadX = 330, spreadY = 210;
+  function makeParts() {
+    parts = [];
+    for (var i = 0; i < N; i++) {
+      parts.push({
+        offX: gauss() * spreadX,
+        offY: gauss() * spreadY,
+        jx: rnd(-1, 1),
+        jy: rnd(-1, 1),
+        x: homeCX, y: homeCY,
+        sizeS: rnd(110, 230),
+        sizeG: rnd(26, 46),
+        aS: rnd(0.03, 0.052),
+        aG: rnd(0.10, 0.15),
+        hueOff: rnd(-15, 15)
+      });
+    }
+  }
+  makeParts();
+
+  var active = false;   // 鼠标是否位于右侧内容区
+  var blend = 0;        // 0 = 散开（默认弥散一团），1 = 收束聚合到鼠标
+  var mx = homeCX, my = homeCY;
+  var t0 = performance.now();
+
+  // 缓慢变换色相：靛蓝 → 紫 → 粉 → 天蓝 → 靛蓝（一圈约 36 秒）
+  var HUE_PALETTE = [216, 268, 322, 196, 216];
+  function slowHue(now) {
+    var seg = 9;
+    var total = seg * (HUE_PALETTE.length - 1);
+    var t = ((now - t0) / 1000) % total / total;
+    var idx = Math.floor(t * (HUE_PALETTE.length - 1));
+    var f = t * (HUE_PALETTE.length - 1) - idx;
+    var e = f * f * (3 - 2 * f);
+    return HUE_PALETTE[idx] + (HUE_PALETTE[idx + 1] - HUE_PALETTE[idx]) * e;
+  }
+
+  function onMove(e) {
     if (!root.isConnected) {
       document.removeEventListener("mousemove", onMove);
       return;
     }
-    var mx = e.clientX < left + 12 ? left + 12 : e.clientX;
-    var my = e.clientY;
-    for (var i = 0; i < wraps.length; i++) {
-      var w = wraps[i];
-      var k = parseFloat(w.getAttribute("data-depth")) || 0.08;
-      var bx = (parseFloat(w.getAttribute("data-x")) || 50) / 100 * vw;
-      var by = (parseFloat(w.getAttribute("data-y")) || 50) / 100 * vh;
-      targets[i].x = (mx - bx) * k;
-      targets[i].y = (my - by) * k;
+    mx = e.clientX;
+    my = e.clientY;
+    active = mx >= left + 10 && mx <= vw && my >= 0 && my <= vh;
+  }
+  function onLeave() { active = false; }
+  function onResize() {
+    measure();
+    for (var i = 0; i < parts.length; i++) {
+      parts[i].x = homeCX + parts[i].offX;
+      parts[i].y = homeCY + parts[i].offY;
     }
-  };
+  }
+
+  function draw(now) {
+    var hue = slowHue(now);
+    var gatheredSpread = 22;
+    ctx.clearRect(0, 0, vw, vh);
+    ctx.globalCompositeOperation = "lighter";
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i];
+      var hx = homeCX + p.offX;
+      var hy = homeCY + p.offY;
+      var tx = hx + (mx + p.jx * gatheredSpread - hx) * blend;
+      var ty = hy + (my + p.jy * gatheredSpread - hy) * blend;
+      p.x += (tx - p.x) * 0.07;
+      p.y += (ty - p.y) * 0.07;
+      var size = p.sizeS + (p.sizeG - p.sizeS) * blend;
+      var alpha = p.aS + (p.aG - p.aS) * blend;
+      var hh = hue + p.hueOff;
+      var col = "hsla(" + hh.toFixed(1) + ", 88%, 72%, " + alpha.toFixed(4) + ")";
+      var grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, size);
+      grad.addColorStop(0, col);
+      grad.addColorStop(1, "hsla(" + hh.toFixed(1) + ", 88%, 72%, 0)");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, size, 0, 6.2832);
+      ctx.fill();
+    }
+    // 聚合时在鼠标处补一圈柔和光晕，让“收束”更明显
+    if (blend > 0.01) {
+      var halo = "hsla(" + hue.toFixed(1) + ", 92%, 74%, " + (0.055 * blend).toFixed(4) + ")";
+      var hs = 160 + 60 * blend;
+      var hg = ctx.createRadialGradient(mx, my, 0, mx, my, hs);
+      hg.addColorStop(0, halo);
+      hg.addColorStop(1, "hsla(" + hue.toFixed(1) + ", 92%, 74%, 0)");
+      ctx.fillStyle = hg;
+      ctx.beginPath();
+      ctx.arc(mx, my, hs, 0, 6.2832);
+      ctx.fill();
+    }
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  var raf = null;
+  function tick(now) {
+    if (!root.isConnected) { cleanup(); return; }
+    var target = active ? 1 : 0;
+    blend += (target - blend) * 0.055;
+    if (target === 0 && blend < 0.001) blend = 0;
+    if (target === 1 && blend > 0.999) blend = 1;
+    draw(now);
+    raf = requestAnimationFrame(tick);
+  }
   function cleanup() {
     if (raf) cancelAnimationFrame(raf);
     raf = null;
     document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseleave", onLeave);
     window.removeEventListener("resize", onResize);
-  }
-  var onResize = function () { measure(); };
-  var raf = null;
-  function tick() {
-    if (!root.isConnected) { cleanup(); return; }
-    for (var i = 0; i < wraps.length; i++) {
-      currents[i].x += (targets[i].x - currents[i].x) * 0.075;
-      currents[i].y += (targets[i].y - currents[i].y) * 0.075;
-      var t = "translate3d(" + currents[i].x.toFixed(2) + "px," + currents[i].y.toFixed(2) + "px,0)";
-      if (wraps[i].style.transform !== t) wraps[i].style.transform = t;
-    }
-    raf = requestAnimationFrame(tick);
   }
   root._agCleanup = cleanup;
   document.addEventListener("mousemove", onMove, { passive: true });
+  document.addEventListener("mouseleave", onLeave, { passive: true });
   window.addEventListener("resize", onResize);
-  if (!reduce) raf = requestAnimationFrame(tick);
+  if (reduce) {
+    draw(performance.now());
+  } else {
+    raf = requestAnimationFrame(tick);
+  }
 })();
 </script>
 """
 
 
 def _inject_ambient_glow():
-    """规划结果生成前，在主内容区注入随鼠标流动的多彩泛光背景。
+    """规划结果生成前，在主内容区注入「一团随鼠标收束 / 散开的多彩泛光」。
 
-    通过 st.html(unsafe_allow_javascript=True) 注入固定于视口的装饰层：
+    通过 st.html(unsafe_allow_javascript=True) 注入固定于视口的 Canvas 泛光层：
     - 仅在使用旅行规划模式且尚未产出规划结果时调用；
+    - 默认在右侧内容区呈一团缓慢变色的弥散泛光；鼠标进入该区域时，
+      光点向鼠标处收束聚合、变得更亮，鼠标移出后重新散开；
     - 泛光层 pointer-events: none，不拦截任何交互；
-    - 遵循 prefers-reduced-motion，关闭漂移动画与鼠标跟随。
+    - 遵循 prefers-reduced-motion，仅渲染一帧静态泛光，不做动画。
     """
     st.html(_AMBIENT_GLOW_HTML, unsafe_allow_javascript=True)
 

@@ -1073,7 +1073,7 @@ iframe {
     border-radius: 14px;
 }
 
-/* ---------- 规划结果前：多彩泛光背景（Gemini 风格，随鼠标流动） ---------- */
+/* ---------- 规划结果前：一团多彩泛光（随鼠标收束 / 散开） ---------- */
 /* 让泛光层显示在应用背景之上、正文内容之下：将 stAppViewContainer 提升为层叠上下文 */
 [data-testid="stAppViewContainer"] {
     isolation: isolate;
@@ -1087,71 +1087,10 @@ iframe {
     pointer-events: none;
 }
 
-.ag-wrap {
+.ag-canvas {
     position: absolute;
-    top: 0;
-    left: 0;
-    will-change: transform;
-}
-
-.ag-blob {
-    position: absolute;
-    left: 0;
-    top: 0;
-    border-radius: 50%;
-    transform: translate(-50%, -50%);
-    filter: blur(58px);
-    animation: ag-drift 24s ease-in-out infinite alternate;
-}
-
-.ag-w1 { left: 74%; top: 0%; }
-.ag-w2 { left: 52%; top: -14%; }
-.ag-w3 { left: 98%; top: 46%; }
-.ag-w4 { left: 66%; top: 88%; }
-.ag-w5 { left: 36%; top: 62%; }
-
-.ag-c1 {
-    width: 66vmax; height: 66vmax;
-    background: radial-gradient(circle, rgba(99, 102, 241, 0.32) 0%, rgba(99, 102, 241, 0) 66%);
-    animation-duration: 26s;
-    animation-delay: -2s;
-}
-
-.ag-c2 {
-    width: 58vmax; height: 58vmax;
-    background: radial-gradient(circle, rgba(56, 189, 248, 0.28) 0%, rgba(56, 189, 248, 0) 66%);
-    animation-duration: 22s;
-    animation-delay: -6s;
-}
-
-.ag-c3 {
-    width: 54vmax; height: 54vmax;
-    background: radial-gradient(circle, rgba(168, 85, 247, 0.24) 0%, rgba(168, 85, 247, 0) 64%);
-    animation-duration: 30s;
-    animation-delay: -10s;
-}
-
-.ag-c4 {
-    width: 60vmax; height: 60vmax;
-    background: radial-gradient(circle, rgba(244, 114, 182, 0.22) 0%, rgba(244, 114, 182, 0) 64%);
-    animation-duration: 27s;
-    animation-delay: -14s;
-}
-
-.ag-c5 {
-    width: 50vmax; height: 50vmax;
-    background: radial-gradient(circle, rgba(251, 191, 36, 0.15) 0%, rgba(251, 191, 36, 0) 60%);
-    animation-duration: 33s;
-    animation-delay: -18s;
-}
-
-@keyframes ag-drift {
-    from { transform: translate(-50%, -50%) translate3d(-2.2vmax, -1.6vmax, 0) scale(1); }
-    to   { transform: translate(-50%, -50%) translate3d(2.6vmax, 2.2vmax, 0) scale(1.08); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-    #ambient-glow .ag-blob {
-        animation: none;
-    }
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
 }

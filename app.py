@@ -774,53 +774,53 @@ _AMBIENT_GLOW_HTML = """
     var sb = document.querySelector('[data-testid="stSidebar"]');
     left = sb ? sb.getBoundingClientRect().right : 0;
     var paneW = Math.max(vw - left, 320);
-    // 泛光默认静置在右侧内容区上方（类似原版右上角那团光）
-    homeCX = left + paneW * 0.72;
-    homeCY = vh * 0.30;
-    dpr = Math.min(window.devicePixelRatio || 1, 1.75);
+    // 无鼠标时的“家”：右侧内容区上方偏中（类似原版右上角那团光）
+    homeCX = left + paneW * 0.7;
+    homeCY = vh * 0.34;
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
     canvas.width = Math.round(vw * dpr);
     canvas.height = Math.round(vh * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
   measure();
 
+  // 无鼠标时：更大的一团弥散泛光（散布范围大、光点大而柔）
   var N = 46;
   var rnd = function (a, b) { return a + Math.random() * (b - a); };
   var gauss = function () { return (Math.random() + Math.random() + Math.random() - 1.5) / 1.5; };
+  var spreadX = 470, spreadY = 320;
   var parts = [];
-  var spreadX = 330, spreadY = 210;
-  function makeParts() {
-    parts = [];
-    for (var i = 0; i < N; i++) {
-      parts.push({
-        offX: gauss() * spreadX,
-        offY: gauss() * spreadY,
-        jx: rnd(-1, 1),
-        jy: rnd(-1, 1),
-        x: homeCX, y: homeCY,
-        sizeS: rnd(110, 230),
-        sizeG: rnd(26, 46),
-        aS: rnd(0.03, 0.052),
-        aG: rnd(0.10, 0.15),
-        hueOff: rnd(-15, 15)
-      });
-    }
+  for (var i = 0; i < N; i++) {
+    parts.push({
+      offX: gauss() * spreadX,
+      offY: gauss() * spreadY,
+      jx: rnd(-1, 1),
+      jy: rnd(-1, 1),
+      x: homeCX, y: homeCY,
+      sizeS: rnd(150, 270),
+      sizeG: rnd(74, 116),
+      aS: rnd(0.03, 0.052),
+      aG: rnd(0.05, 0.078),
+      hueOff: rnd(-15, 15)
+    });
   }
-  makeParts();
 
   var active = false;   // 鼠标是否位于右侧内容区
-  var blend = 0;        // 0 = 散开（默认弥散一团），1 = 收束聚合到鼠标
-  var mx = homeCX, my = homeCY;
+  var blend = 0;        // 0 = 无鼠标的弥散大泛光，1 = 鼠标处的发散光团
+  var mx = homeCX, my = homeCY;              // 原始鼠标位置
+  var focusX = homeCX, focusY = homeCY;      // 平滑后的光团焦点：带惯性，缓慢跟随
   var t0 = performance.now();
 
   // 缓慢变换色相：靛蓝 → 紫 → 粉 → 天蓝 → 靛蓝（一圈约 36 秒）
   var HUE_PALETTE = [216, 268, 322, 196, 216];
   function slowHue(now) {
-    var seg = 9;
-    var total = seg * (HUE_PALETTE.length - 1);
-    var t = ((now - t0) / 1000) % total / total;
-    var idx = Math.floor(t * (HUE_PALETTE.length - 1));
-    var f = t * (HUE_PALETTE.length - 1) - idx;
+    var segMs = 9000;
+    var spanMs = segMs * (HUE_PALETTE.length - 1);
+    var elapsed = Math.max(0, (now || 0) - t0);
+    var t = (elapsed % spanMs) / spanMs;
+    var pos = t * (HUE_PALETTE.length - 1);
+    var idx = Math.min(HUE_PALETTE.length - 2, Math.floor(pos));
+    var f = pos - idx;
     var e = f * f * (3 - 2 * f);
     return HUE_PALETTE[idx] + (HUE_PALETTE[idx + 1] - HUE_PALETTE[idx]) * e;
   }
@@ -845,15 +845,20 @@ _AMBIENT_GLOW_HTML = """
 
   function draw(now) {
     var hue = slowHue(now);
-    var gatheredSpread = 22;
+    // 无鼠标时整团泛光以非常非常缓慢的速度漂移（周期约 78s / 126s，位移仅几十像素）
+    var ph = ((now || 0) - t0) / 1000 * (Math.PI * 2 / 78);
+    var driftX = 54 * Math.sin(ph);
+    var driftY = 36 * Math.sin(ph * 0.62 + 1.7);
+    // 有鼠标时：粒子在焦点附近发散成一团较宽的光（不聚成小点）
+    var gatheredSpread = 84;
     ctx.clearRect(0, 0, vw, vh);
     ctx.globalCompositeOperation = "lighter";
     for (var i = 0; i < parts.length; i++) {
       var p = parts[i];
-      var hx = homeCX + p.offX;
-      var hy = homeCY + p.offY;
-      var tx = hx + (mx + p.jx * gatheredSpread - hx) * blend;
-      var ty = hy + (my + p.jy * gatheredSpread - hy) * blend;
+      var hx = homeCX + p.offX + driftX;
+      var hy = homeCY + p.offY + driftY;
+      var tx = hx + (focusX + p.jx * gatheredSpread - hx) * blend;
+      var ty = hy + (focusY + p.jy * gatheredSpread - hy) * blend;
       p.x += (tx - p.x) * 0.07;
       p.y += (ty - p.y) * 0.07;
       var size = p.sizeS + (p.sizeG - p.sizeS) * blend;
@@ -868,16 +873,16 @@ _AMBIENT_GLOW_HTML = """
       ctx.arc(p.x, p.y, size, 0, 6.2832);
       ctx.fill();
     }
-    // 聚合时在鼠标处补一圈柔和光晕，让“收束”更明显
+    // 鼠标在场时补一圈宽而柔的光晕
     if (blend > 0.01) {
-      var halo = "hsla(" + hue.toFixed(1) + ", 92%, 74%, " + (0.055 * blend).toFixed(4) + ")";
-      var hs = 160 + 60 * blend;
-      var hg = ctx.createRadialGradient(mx, my, 0, mx, my, hs);
+      var halo = "hsla(" + hue.toFixed(1) + ", 92%, 74%, " + (0.04 * blend).toFixed(4) + ")";
+      var hs = 240 + 80 * blend;
+      var hg = ctx.createRadialGradient(focusX, focusY, 0, focusX, focusY, hs);
       hg.addColorStop(0, halo);
       hg.addColorStop(1, "hsla(" + hue.toFixed(1) + ", 92%, 74%, 0)");
       ctx.fillStyle = hg;
       ctx.beginPath();
-      ctx.arc(mx, my, hs, 0, 6.2832);
+      ctx.arc(focusX, focusY, hs, 0, 6.2832);
       ctx.fill();
     }
     ctx.globalCompositeOperation = "source-over";
@@ -887,9 +892,15 @@ _AMBIENT_GLOW_HTML = """
   function tick(now) {
     if (!root.isConnected) { cleanup(); return; }
     var target = active ? 1 : 0;
-    blend += (target - blend) * 0.055;
+    blend += (target - blend) * 0.05;
     if (target === 0 && blend < 0.001) blend = 0;
     if (target === 1 && blend > 0.999) blend = 1;
+    // 焦点平滑滞后：即使鼠标快速甩动，光团也只缓缓跟随 / 缓缓归位
+    var fxk = active ? 0.03 : 0.02;
+    var fxt = active ? mx : homeCX;
+    var fyt = active ? my : homeCY;
+    focusX += (fxt - focusX) * fxk;
+    focusY += (fyt - focusY) * fxk;
     draw(now);
     raf = requestAnimationFrame(tick);
   }
@@ -904,11 +915,8 @@ _AMBIENT_GLOW_HTML = """
   document.addEventListener("mousemove", onMove, { passive: true });
   document.addEventListener("mouseleave", onLeave, { passive: true });
   window.addEventListener("resize", onResize);
-  if (reduce) {
-    draw(performance.now());
-  } else {
-    raf = requestAnimationFrame(tick);
-  }
+  draw(performance.now());
+  if (!reduce) { raf = requestAnimationFrame(tick); }
 })();
 </script>
 """
@@ -919,10 +927,10 @@ def _inject_ambient_glow():
 
     通过 st.html(unsafe_allow_javascript=True) 注入固定于视口的 Canvas 泛光层：
     - 仅在使用旅行规划模式且尚未产出规划结果时调用；
-    - 默认在右侧内容区呈一团缓慢变色的弥散泛光；鼠标进入该区域时，
-      光点向鼠标处收束聚合、变得更亮，鼠标移出后重新散开；
+    - 无鼠标时：右侧内容区呈一团更大、缓慢变色的弥散泛光，以极慢速度漂移；
+    - 鼠标进入右侧内容区：光点向鼠标处收束聚合、更发散；鼠标移出后重新散开；
     - 泛光层 pointer-events: none，不拦截任何交互；
-    - 遵循 prefers-reduced-motion，仅渲染一帧静态泛光，不做动画。
+    - 遵循 prefers-reduced-motion，仅渲染一帧静态泛光。
     """
     st.html(_AMBIENT_GLOW_HTML, unsafe_allow_javascript=True)
 

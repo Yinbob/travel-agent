@@ -1073,7 +1073,7 @@ iframe {
     border-radius: 14px;
 }
 
-/* ---------- 规划结果前：一团多彩泛光（随鼠标收束 / 散开） ---------- */
+/* ---------- 规划结果前：全屏一团、随鼠标收束/散开的泛光 ---------- */
 /* 让泛光层显示在应用背景之上、正文内容之下：将 stAppViewContainer 提升为层叠上下文 */
 [data-testid="stAppViewContainer"] {
     isolation: isolate;

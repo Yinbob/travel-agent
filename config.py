@@ -92,9 +92,9 @@ class Config:
         default_factory=lambda: os.getenv("DASHSCOPE_API_KEY", "")
     )
 
-    # LLM
-    model_name: str = "qwen3-max"
-    temperature: float = 0.7
+    # LLM —— qwen-plus 比 qwen3-max 快 2-3 倍，质量差别小
+    model_name: str = "qwen-plus"
+    temperature: float = 0.5
 
     # 地图 MCP 连接（高德开放平台官方 MCP，原阿里百炼 amap-maps 已下线）
     mcp_transport: str = "http"

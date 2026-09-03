@@ -412,19 +412,25 @@ def build_prompt(
 
 # 工具名 → 流式状态标签
 _STREAM_LABELS = {
-    "query_weather":     "🌤️ 查询天气中...",
-    "search_hotel":      "🏨 搜索酒店中...",
-    "search_attraction": "🏛️ 搜索景点中...",
-    "maps_direction_walking_by_address":             "🚶 规划步行路线...",
-    "maps_direction_driving_by_address":             "🚗 规划驾车路线...",
-    "maps_direction_transit_integrated_by_address":  "🚌 规划公交路线...",
+    "maps_weather":                     "🌤️ 查询天气中...",
+    "maps_text_search":                 "🔍 搜索景点/酒店中...",
+    "maps_around_search":               "📍 周边搜索中...",
+    "maps_search_detail":               "📄 获取POI详情...",
+    "maps_geo":                         "📍 地址转经纬度...",
+    "maps_direction_walking":           "🚶 规划步行路线...",
+    "maps_direction_walking_by_address": "🚶 规划步行路线...",
+    "maps_direction_driving":           "🚗 规划驾车路线...",
+    "maps_direction_driving_by_address": "🚗 规划驾车路线...",
+    "maps_direction_transit_integrated": "🚌 规划公交路线...",
+    "maps_direction_transit_integrated_by_address": "🚌 规划公交路线...",
+    "maps_direction_bicycling":         "🚲 规划骑行路线...",
+    "maps_bicycling":                   "🚲 规划骑行路线...",
     "search":   "🏨 酒店多平台比价中...",
     "calendar": "📅 扫描低价日历中...",
     "advisor":  "🧭 订房决策分析中...",
 }
 
-# 状态行表情前缀（用于从 token 流中识别工具状态）
-_STATUS_EMOJIS = ["🌤️", "🏨", "🏛️", "🚶", "🚗", "🚌", "📅", "🧭"]
+_STATUS_EMOJIS = ["🌤️", "🔍", "📍", "📄", "🚶", "🚗", "🚌", "🚲", "🏨", "📅", "🧭"]
 
 
 def travel_mode():
@@ -653,17 +659,47 @@ def travel_mode():
                 attractions = day.get("attractions", [])
                 if attractions:
                     st.markdown("**🏛️ 景点**")
+                    from render import attraction_photo, attraction_map_image
                     for a in attractions:
                         ticket = a.get("ticket_price", 0)
                         ts = "🆓 免费" if ticket == 0 else f"🎫 ¥{ticket}"
                         with st.container(border=True):
+                            name = a.get("name", "景点")
+                            img_url = a.get("image_url") or ""
+                            if not img_url:
+                                img_url = attraction_photo(name, plan_city) or ""
+                            is_map = False
+                            if not img_url:
+                                img_url = attraction_map_image(a.get("location") or {}) or ""
+                                is_map = True
+                            if img_url:
+                                if is_map:
+                                    st.markdown(
+                                        f"""
+                                        <div style="position:relative;border-radius:8px;overflow:hidden;margin-bottom:.5rem">
+                                          <img src="{img_url}" style="width:100%;display:block;border-radius:8px" />
+                                          <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-100%)">
+                                            <div style="width:14px;height:14px;background:#FF4444;border:3px solid #fff;border-radius:50%;box-shadow:0 2px 6px rgba(0,0,0,.4);animation:pulse 2s infinite"></div>
+                                            <div style="width:2px;height:14px;background:#FF4444;margin:-1px auto 0"></div>
+                                          </div>
+                                          <div style="position:absolute;top:12px;left:12px;background:rgba(255,255,255,.95);color:#c0392b;font-weight:600;padding:3px 10px;border-radius:14px;font-size:.85rem;box-shadow:0 1px 4px rgba(0,0,0,.15)">📍 {name}</div>
+                                        </div>
+                                        <style>@keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:.4}}}}</style>
+                                        """,
+                                        unsafe_allow_html=True,
+                                    )
+                                else:
+                                    st.image(img_url, use_container_width=True)
                             st.markdown(
-                                f"**{a.get('name', '?')}**  |  {a.get('category', '')}  |  "
+                                f"**{name}**  |  {a.get('category', '')}  |  "
                                 f"⏱️ {a.get('visit_duration', 0)}分钟  |  {ts}"
                             )
-                            st.caption(a.get("address", ""))
-                            if a.get("description"):
-                                st.caption(a["description"])
+                            if a.get("address"):
+                                st.caption(f"📍 {a['address']}")
+                            desc = a.get("description")
+                            if desc:
+                                st.markdown(f"<div style='color:#555;font-size:.9rem;margin-top:.3rem'>{desc}</div>",
+                                            unsafe_allow_html=True)
 
                 # 餐饮
                 meals = day.get("meals", [])
@@ -730,82 +766,18 @@ def travel_mode():
     st.markdown("---")
     st.markdown("##### 📥 导出计划")
 
-    def _build_markdown(p):
-        md = f"# 🌴 {p.get('city', '')}旅行计划\n\n"
-        md += f"**日期:** {p.get('start_date', '')} ~ {p.get('end_date', '')}\n\n"
-
-        md += "## 🌤️ 天气预报\n\n"
-        for w in p.get("weather_info", []):
-            md += (
-                f"- {w.get('date', '')[-5:]}: "
-                f"{w.get('day_weather', '')}/{w.get('night_weather', '')}  "
-                f"{w.get('day_temp', '')}°C~{w.get('night_temp', '')}°C  "
-                f"{w.get('wind_direction', '')}{w.get('wind_power', '')}\n"
-            )
-        export_city = p.get("city", "")
-        if export_city:
-            md += (
-                "\n> 查看 msn.cn 天气："
-                f"[{export_city} 天气预报](https://www.msn.cn/zh-cn/weather/"
-                f"forecast/in-{urllib.parse.quote(export_city)})\n"
-            )
-
-        md += "\n## 📅 每日行程\n\n"
-        for day in p.get("days", []):
-            idx = day.get("day_index", 0) + 1
-            md += f"### Day {idx} — {day.get('date', '')[-5:]}  {day.get('description', '')}\n\n"
-            h = day.get("hotel", {})
-            if h.get("name"):
-                md += f"- **住宿:** {h['name']}  ★{h.get('rating', '')}  ¥{h.get('estimated_cost', 0)}/晚  |  {h.get('address', '')}\n"
-            md += f"- **交通:** {day.get('transportation', '')}\n"
-            for a in day.get("attractions", []):
-                t = "免费" if a.get("ticket_price", 0) == 0 else f"¥{a.get('ticket_price', 0)}"
-                md += f"  - **{a.get('name', '')}** ({a.get('category', '')})  ⏱️{a.get('visit_duration', 0)}分钟  {t}  |  {a.get('address', '')}\n"
-            for m in day.get("meals", []):
-                mt = {"breakfast": "早餐", "lunch": "午餐", "dinner": "晚餐"}
-                md += f"  - {mt.get(m.get('type', ''), '餐')}: {m.get('name', '')}  ¥{m.get('estimated_cost', 0)}\n"
-            md += "\n"
-
-        b = p.get("budget", {})
-        if b:
-            md += "## 💰 预算汇总\n\n"
-            md += "| 项目 | 金额 |\n|------|------|\n"
-            md += f"| 景点门票 | ¥{b.get('total_attractions', 0):,} |\n"
-            md += f"| 酒店住宿 | ¥{b.get('total_hotels', 0):,} |\n"
-            md += f"| 餐饮美食 | ¥{b.get('total_meals', 0):,} |\n"
-            md += f"| 交通出行 | ¥{b.get('total_transportation', 0):,} |\n"
-            md += f"| **总计** | **¥{b.get('total', 0):,}** |\n"
-
-        hc = p.get("hotel_comparison", [])
-        if hc:
-            md += "\n## 🏨 酒店比价\n\n"
-            md += "| 酒店 | 最低平台 | 最低价 | 信号 | 建议 |\n"
-            md += "|------|---------|--------|------|------|\n"
-            for h in hc:
-                price = h.get("lowest_price")
-                price_s = f"¥{price}" if isinstance(price, (int, float)) else "—"
-                md += (
-                    f"| {h.get('name', '')} | {h.get('best_platform', '—')} "
-                    f"| {price_s} | {h.get('signal', '')} | {h.get('advice', '')} |\n"
-                )
-
-        sug = p.get("overall_suggestions", "")
-        if sug:
-            md += "\n## 💡 旅行建议\n\n"
-            for tip in sug.replace("；", ";").split(";"):
-                tip = tip.strip()
-                if tip:
-                    md += f"- {tip}\n"
-        return md
-
-    md_content = _build_markdown(plan)
-    st.download_button(
-        label="📄 下载 Markdown",
-        data=md_content,
-        file_name=f"{plan.get('city', '旅行')}_旅行计划.md",
-        mime="text/markdown",
-        width="stretch",
-    )
+    from render import build_pdf
+    pdf_bytes = build_pdf(plan)
+    if pdf_bytes:
+        st.download_button(
+            label="📄 下载 PDF 旅行计划",
+            data=pdf_bytes,
+            file_name=f"{plan.get('city', '旅行')}_旅行计划.pdf",
+            mime="application/pdf",
+            width="stretch",
+        )
+    else:
+        st.warning("PDF 生成失败，请确认已安装 reportlab 库")
 
 
 # ==================== 主入口 ====================

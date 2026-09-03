@@ -31,10 +31,16 @@ Web 界面在侧边栏顶部切换两个功能模式。
 | 🔍 比价搜索 | `search`    | 飞猪 + 途牛合并去重，按价格排序并给出订房建议        |
 | 📅 低价日历 | `calendar`  | 扫描 5-30 天入住价格洼地，标注低价 / 适中 / 偏贵     |
 | 🧭 订房决策 | `advisor`   | 指定酒店多平台精确比价，输出 🟢 订 / 🟡 等 / 🔴 观望 |
-| 🌐 Agoda / Booking | `search`/`advisor` 内置扩展 | 经 hotelrate-mcp 实时比价（可选，默认演示模式合成数据，无需浏览器与 Key） |
+| 🔀 三方比价 | `compare_abt` | **Agoda · Booking · 途牛** 三方即时房价对比，输出最低价平台与订房建议 |
 
-> 国内四平台（飞猪/途牛/RG/同程）走内置代理直连；Agoda / Booking.com 由独立的
-> `hotelrate-mcp` 环境提供（演示模式开箱即用，真实比价需安装 Playwright 浏览器）。
+> 国际平台行包含：总价（¥，非 CNY 自动近似折算）、每晚均价、房型、餐标、取消政策、
+> 数据来源标识（demo/parsed/api/dom）与平台预订链接。hotelrate-crawl 的数据模型面向
+> 房价本身，不含星级/评分等酒店元数据——酒店详情请点开各自平台链接查看。
+| 🌐 Agoda / Booking | `search`/`advisor` 内置扩展 | 经 hotelrate-crawl 实时取价（可选，默认演示模式合成数据，无需浏览器与 Key） |
+
+> 国内平台（飞猪/途牛/RG/同程）走内置代理直连；Agoda / Booking.com 由独立的
+> `.hotelrate-mcp` 环境（hotelrate-crawl）提供实时取价（演示模式开箱即用，
+> 真实比价需安装 Playwright 浏览器）。
 > 酒店价格实时变动，查询结果仅供参考，实际价格以预订页面为准。
 
 ![示例1](示例1.png)
@@ -94,8 +100,10 @@ python -m venv .hotelrate-mcp
   ```
 
 > 接入架构：`.hotel-mcp` 里的酒店聪明订服务通过 `mcp_hotel_smart_book/hotelrate_bridge.py`
-> 桥接子进程（在 `.hotelrate-mcp` 环境内用 mcp 1.x 客户端）连接 hotelrate-mcp 的
-> `hotel_quote` 工具，再把 Agoda / Booking 报价合并进 `search` / `advisor` 结果。
+> 子进程（在 `.hotelrate-mcp` 环境内）**直接调用 hotelrate-crawl 的取价方法**
+> （`LiveQuoteService.quote` → `AgodaCollector` / `BookingCollector`，Playwright 实时抓取；
+> 演示模式为合成价），再把 Agoda / Booking 报价并入 `search` / `advisor`，
+> 并提供 `compare_abt`（Agoda · Booking · 途牛三方比价）工具。
 
 ### 5. 配置 API Key
 
@@ -198,7 +206,7 @@ travel-agent/
 - 高德官方工具命名：`maps_weather`、`maps_text_search`、`maps_around_search`、`maps_search_detail`、`maps_geo`、`maps_direction_walking/driving/transit_integrated/bicycling` 等。路线工具为**坐标版**，规划前用 `maps_geo` 或 POI 返回的 `location` 转经纬度。
 - 主环境 mcp SDK 固定为 **1.x**（`langchain-mcp-adapters` 依赖其 API），酒店服务用独立 `.hotel-mcp` 跑 fastmcp 4 + mcp 2，避免版本冲突。
 - 领域工具过滤：先精确/前缀匹配，再关键字兜底，能兼容不同版本高德服务的工具命名差异。
-- **Agoda / Booking 外部 MCP（可选）**：酒店聪明订服务（跑在 `.hotel-mcp`）通过 `hotelrate_bridge.py` 子进程（跑在 `.hotelrate-mcp`，mcp 1.x 客户端）调用 hotelrate-mcp 的 `hotel_quote`（Booking.com + Agoda），结果归一化后并入 `search`（最便宜前 N 家抽查）与 `advisor`（全网最低可能落在 Booking / Agoda）。两处环境不存在或失败都**静默降级**，不影响国内四平台。
+- **Agoda / Booking 实时取价（可选）**：酒店聪明订服务（跑在 `.hotel-mcp`）通过 `hotelrate_bridge.py` 子进程（跑在 `.hotelrate-mcp`）直接调用 hotelrate-crawl 的取价方法（`LiveQuoteService.quote`，内部即 Agoda/Booking 的 Playwright 抓包取价与多级解析兜底），结果归一化后并入 `search`（最便宜前 N 家抽查）与 `advisor`（全网最低可落在 Booking / Agoda），并提供 `compare_abt`（Agoda·Booking·途牛三方比价）。环境不存在或失败都**静默降级**，不影响国内四平台。
 
 ---
 
@@ -227,7 +235,7 @@ travel-agent/
 
 - `server.py` 的 `search` / `advisor` 在返回前若检测到 `.hotelrate-mcp` 环境且未禁用，会把 **Agoda / Booking** 报价合并进结果（演示数据默认标注）；`calendar` 保持国内平台逻辑不变。
 - `hotelrate_source.py`：配置开关（`HOTELRATE_MCP_ENABLED / HOTELRATE_DEMO / HOTELRATE_CURRENCY / HOTELRATE_SPOT_CHECK / HOTELRATE_QUOTE_TIMEOUT`），非 CNY 近似汇率折算，桥子进程的启动/超时/降级。
-- `hotelrate_bridge.py`：在 `.hotelrate-mcp` 内以 mcp 1.x stdio 客户端调用 `hotel_quote`，输出一行归一化 JSON（Booking + Agoda 各自最低价/链接/取消政策）。
+- `hotelrate_bridge.py`：在 `.hotelrate-mcp` 内**直接调用 hotelrate-crawl 的 `LiveQuoteService.quote()`**（AgodaCollector / BookingCollector 实时抓取，demo 为合成价），输出一行归一化 JSON（Booking + Agoda 各自最低价/每晚均价/房型/餐标/取消政策/数据模式/链接）。
 
 ### agents / prompts
 
@@ -290,7 +298,7 @@ travel-agent/
 8. 景点真实配图：`render.attraction_photo()` 直接调高德 POI REST API 拿 photos[0].url；Prompt 要求 LLM 从 MCP 结果提取 `image_url`；UI 三级降级（真实照片 → 兜底高德查询 → 地图底图）。
 9. PDF 导出：Markdown 下载改为 reportlab PDF（封面页 + 天气表格 + 每日行程 + 预算高亮 + 酒店比价 + 页码），自动跨平台发现中文字体。
 10. Windows Streamlit 热加载缓存问题 → 推荐用 `--server.fileWatcherType poll` 启动。
-11. 酒店比价扩展 Agoda / Booking：接入开源 [hotelrate-mcp](https://github.com/seanbabalala/hotelrate-crawl)（Booking.com + Agoda 实时比价）。因其依赖 mcp 1.x，放独立 `.hotelrate-mcp` venv，并用 `hotelrate_bridge.py` 子进程做 mcp1↔mcp1 连接避免与 `.hotel-mcp` 的 mcp2 握手问题；结果并入 `search`（最便宜前 N 家抽查）与 `advisor`（全网最低可落在 Booking/Agoda）；上游 pyproject 未限 mcp 上限 → 需补 `pip install "mcp[cli]>=1.20,<2"` 固定回 1.x。
+11. 酒店比价扩展 Agoda / Booking / 途牛三方比价：接入开源 [hotelrate-crawl](https://github.com/seanbabalala/hotelrate-crawl) 的**取价方法**（`LiveQuoteService.quote` → `AgodaCollector` / `BookingCollector` 的 Playwright 抓包与多级解析兜底）。因其依赖 mcp 1.x，放独立 `.hotelrate-mcp` venv，`hotelrate_bridge.py` 子进程直接调用其服务类取价（不经 MCP 工具转发）；结果并入 `search`（最便宜前 N 家抽查）与 `advisor`（全网最低可落在 Booking/Agoda），并新增 `compare_abt` 提供 Agoda·Booking·途牛三方即时比价；上游 pyproject 未限 mcp 上限 → 需补 `pip install "mcp[cli]>=1.20,<2"` 固定回 1.x。
 
 ---
 

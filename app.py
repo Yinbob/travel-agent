@@ -308,7 +308,8 @@ def _render_calendar_result(data: dict):
 
 
 def _render_advisor_result(data: dict):
-    st.markdown(f"#### 🧭 订房决策 — {data.get('hotel_name', '')}")
+    title = data.get("_ui_title") or f"🧭 订房决策 — {data.get('hotel_name', '')}"
+    st.markdown(f"#### {title}")
     c1, c2 = st.columns(2)
     lowest_price = data.get("lowest_price")
     with c1:
@@ -337,10 +338,24 @@ def _render_advisor_result(data: dict):
                     price_html = '<div style="color:#999">未匹配到价格</div>'
                 crown = '<div style="color:#2E7D32;font-size:.8rem">✅ 全网最低</div>' if is_lowest else ""
                 demo_tag = '<span style="color:#b0a05a;font-size:.75rem">· 演示数据</span>' if p.get("demo") else ""
+                detail_bits = []
+                room = (p.get("room_name") or "").strip()
+                meal = (p.get("meal_plan") or "").strip()
+                if room:
+                    detail_bits.append(room)
+                if meal and meal != room:
+                    detail_bits.append(meal)
+                pn = p.get("per_night")
+                if isinstance(pn, (int, float)) and pn > 0:
+                    detail_bits.append(f"每晚 ¥{pn:g}")
+                detail_html = (
+                    f'<div style="color:#666;font-size:.8rem;margin-top:2px">{" · ".join(detail_bits)}</div>'
+                    if detail_bits else ""
+                )
                 st.markdown(
                     f'<div class="result-card fade-in d{min(i + 1, 6)}" '
                     f'style="border-left-color:{border};text-align:center">'
-                    f'<b>{p.get("source", "?")}</b>{demo_tag}{price_html}{crown}</div>',
+                    f'<b>{p.get("source", "?")}</b>{demo_tag}{price_html}{detail_html}{crown}</div>',
                     unsafe_allow_html=True,
                 )
                 if p.get("url"):
@@ -368,6 +383,7 @@ def hotel_mode():
         btn_search = st.button("🔍 比价搜索", width="stretch")
         btn_calendar = st.button("📅 低价日历", width="stretch")
         btn_advisor = st.button("🧭 订房决策", type="primary", width="stretch")
+        btn_abt = st.button("🔀 Agoda·Booking·途牛 三方比价", width="stretch")
 
     # ---- 触发查询 ----
     ci = h_check_in.strftime("%Y-%m-%d")
@@ -413,6 +429,22 @@ def hotel_mode():
             if result is not None:
                 st.session_state.hotel_result = {"tool": "advisor", "data": result}
 
+    if btn_abt:
+        if not h_city.strip():
+            st.error("请输入城市")
+        elif not h_hotel.strip():
+            st.error("三方比价需要输入酒店名称")
+        elif h_check_out <= h_check_in:
+            st.error("离店日期必须晚于入住日期")
+        else:
+            result = _run_hotel_tool("compare_abt", {
+                "hotel": h_hotel.strip(), "city": h_city.strip(),
+                "check_in": ci, "check_out": co,
+            }, "🔀 正在 Agoda·Booking·途牛 三方实时比价...")
+            if result is not None:
+                result["_ui_title"] = f"🔀 Agoda · Booking · 途牛 三方房价对比 — {h_hotel.strip()}"
+                st.session_state.hotel_result = {"tool": "abt", "data": result}
+
     # ---- 结果展示 ----
     hotel_result = st.session_state.get("hotel_result")
     if hotel_result is None:
@@ -420,7 +452,7 @@ def hotel_mode():
         col_a, col_b, col_c = st.columns(3)
         with col_a:
             st.markdown("##### 🔍 多平台实时比价")
-            st.caption("飞猪/途牛/RG/同程 + Agoda/Booking（可选）多平台实时比价，找到最低价")
+            st.caption("飞猪/途牛/RG/同程 + Agoda/Booking（可选）多平台比价；另有 Agoda·Booking·途牛 三方比价入口")
         with col_b:
             st.markdown("##### 📅 低价日历")
             st.caption("一键扫描 7-30 天价格洼地，找到最便宜的入住日期")

@@ -557,6 +557,9 @@ def advisor(hotel: str, city: str, check_in: str, check_out: str) -> str:
                 "url": entry.get("url", ""),
                 "cancel_policy": entry.get("cancel_policy", ""),
                 "room_name": entry.get("room_name", ""),
+                "meal_plan": entry.get("meal_plan", ""),
+                "per_night": entry.get("per_night"),
+                "mode": entry.get("mode", ""),
                 "demo": bool(entry.get("matched")) and foreign_demo,
                 "error": entry.get("error", ""),
             })
@@ -575,6 +578,97 @@ def advisor(hotel: str, city: str, check_in: str, check_out: str) -> str:
     return json.dumps({
         "success": True, "hotel_name": hotel, "city": city, "check_in": check_in, "check_out": check_out,
         "platforms": all_sorted,
+        "foreign_checked": foreign_checked,
+        "foreign_demo": foreign_demo,
+        "lowest_price": priced[0]["price"] if priced else None,
+        "lowest_platform": priced[0]["source"] if priced else None,
+        "lowest_url": priced[0].get("url") if priced else None,
+        "advice": advice,
+    }, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def compare_abt(hotel: str, city: str, check_in: str, check_out: str) -> str:
+    """【三方比价】Agoda / Booking / 途牛 房价对比。
+
+    Agoda 与 Booking 使用 hotelrate-crawl 的实时取价方法（Playwright 抓取；
+    演示模式下为合成价并在 demo 字段标记），途牛走内置代理直连。
+
+    Args:
+        hotel: 酒店名称，如：上海外滩华尔道夫
+        city: 城市名
+        check_in: 入住日期，格式YYYY-MM-DD
+        check_out: 离店日期，格式YYYY-MM-DD
+    """
+    foreign_checked = _hr.enabled()
+    foreign_demo = False
+
+    rows = []
+    # ---- 国际平台：Agoda / Booking（直接走 hotelrate-crawl 取价方法）----
+    if foreign_checked:
+        fquote = _hr.quote(hotel, city, check_in, check_out)
+        foreign_demo = bool(fquote.get("demo"))
+        for key in ("booking", "agoda"):
+            entry = (fquote.get("platforms") or {}).get(key)
+            if not entry:
+                continue
+            rows.append({
+                "source": entry.get("source"),
+                "matched": bool(entry.get("matched")),
+                "name": entry.get("name") or hotel,
+                "price": entry.get("price"),
+                "url": entry.get("url", ""),
+                "cancel_policy": entry.get("cancel_policy", ""),
+                "room_name": entry.get("room_name", ""),
+                "meal_plan": entry.get("meal_plan", ""),
+                "per_night": entry.get("per_night"),
+                "mode": entry.get("mode", ""),
+                "demo": bool(entry.get("matched")) and foreign_demo,
+                "error": entry.get("error", ""),
+            })
+    else:
+        for source in ("Agoda", "Booking"):
+            rows.append({
+                "source": source, "matched": False, "name": hotel,
+                "price": None, "url": "",
+                "cancel_policy": "", "room_name": "",
+                "demo": False,
+                "error": "国际数据源未启用（未安装 .hotelrate-mcp 或 HOTELRATE_MCP_ENABLED=false）",
+            })
+
+    # ---- 途牛 ----
+    tuniu = compare_tuniu(hotel, city, check_in, check_out)
+    rows.append({
+        "source": "途牛",
+        "matched": bool(tuniu.get("matched")),
+        "name": tuniu.get("name") or hotel,
+        "price": tuniu.get("price"),
+        "url": tuniu.get("url", ""),
+        "star": tuniu.get("star", ""),
+        "score": tuniu.get("score", ""),
+        "cancel_policy": tuniu.get("cancel_policy", ""),
+        "demo": False,
+        "error": tuniu.get("error", ""),
+    })
+
+    # 固定展示顺序：Agoda → Booking → 途牛
+    order = {"Agoda": 0, "Booking": 1, "途牛": 2}
+    rows.sort(key=lambda r: order.get(r.get("source"), 9))
+    priced = [r for r in rows if r.get("matched")
+              and isinstance(r.get("price"), (int, float)) and r["price"] > 0]
+    priced.sort(key=lambda r: r["price"])
+
+    advice = None
+    if priced:
+        all_prices = [r["price"] for r in priced]
+        cancel = priced[0].get("cancel_policy", "")
+        advice = book_or_wait(priced[0]["price"], city, check_in, check_out,
+                              all_prices, cancel, hotel)
+
+    return json.dumps({
+        "success": True, "hotel_name": hotel, "city": city,
+        "check_in": check_in, "check_out": check_out,
+        "platforms": rows,
         "foreign_checked": foreign_checked,
         "foreign_demo": foreign_demo,
         "lowest_price": priced[0]["price"] if priced else None,

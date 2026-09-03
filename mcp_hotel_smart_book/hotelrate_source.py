@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Agoda / Booking.com 外部 MCP 数据源适配器（「酒店聪明订」服务进程侧）。
+"""Agoda / Booking.com 外部数据源适配器（「酒店聪明订」服务进程侧）。
 
 运行在 .hotel-mcp（fastmcp4 / mcp2）内的 server.py 通过本模块把查询「外包」给
 .hotelrate-mcp 环境里的 hotelrate_bridge.py —— 桥进程在 hotelrate 自己的环境内
-以 mcp 1.x stdio 客户端连接 hotelrate-mcp 服务（Booking.com / Agoda 实时爬取或
-demo 合成价），父进程只消费一行 JSON。
+**直接调用 hotelrate-crawl 的取价方法**（LiveQuoteService.quote → AgodaCollector /
+BookingCollector.fetch_rates，Playwright 抓包 + 多级兜底解析；demo 模式即
+build_demo_offer 合成价），父进程只消费一行 JSON。
 
 设计要点：
   - 全部逻辑可选：.hotelrate-mcp 未安装或未启用时返回 None，既有国内四平台
@@ -15,7 +16,6 @@ demo 合成价），父进程只消费一行 JSON。
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -102,7 +102,7 @@ def _to_cny(price: float, currency: str) -> float | None:
 
 def quote(hotel_name: str, city: str, check_in: str, check_out: str,
           adults: int = 2, timeout: float | None = None) -> dict:
-    """通过桥子进程调用 hotelrate-mcp 的 hotel_quote（Booking + Agoda）。
+    """通过桥子进程直接调用 hotelrate-crawl 的取价方法（Agoda + Booking）。
 
     返回归一化结构：
       {"ok": bool, "demo": bool, "error": str, "platforms": {"booking": {...}|None, "agoda": {...}|None}}
@@ -118,8 +118,11 @@ def quote(hotel_name: str, city: str, check_in: str, check_out: str,
 
     currency = os.getenv(ENV_CURRENCY, DEFAULT_CURRENCY) or DEFAULT_CURRENCY
     locale = os.getenv(ENV_LOCALE, DEFAULT_LOCALE) or DEFAULT_LOCALE
-    cfg_timeout = float(os.getenv(ENV_TIMEOUT, str(DEFAULT_TIMEOUT)) or DEFAULT_TIMEOUT)
-    t = float(timeout or cfg_timeout)
+    try:
+        cfg_timeout = float(os.getenv(ENV_TIMEOUT, str(DEFAULT_TIMEOUT)) or DEFAULT_TIMEOUT)
+    except (TypeError, ValueError):
+        cfg_timeout = DEFAULT_TIMEOUT  # 配置写错时回退默认，避免整个工具崩溃
+    t = max(5.0, float(timeout or cfg_timeout))
     firecrawl = _env_flag(ENV_FIRECRAWL, "false")
     demo = demo_mode()
 
@@ -142,6 +145,8 @@ def quote(hotel_name: str, city: str, check_in: str, check_out: str,
             [str(_HOTELRATE_PYTHON), str(_BRIDGE), json.dumps(payload, ensure_ascii=False)],
             capture_output=True,
             text=True,
+            encoding="utf-8",       # 固定 UTF-8，避免 Windows GBK 控制台乱码
+            errors="replace",
             timeout=t + 30,
             cwd=str(_ROOT),
         )
@@ -191,8 +196,12 @@ def quote(hotel_name: str, city: str, check_in: str, check_out: str,
             "price": cny,
             "original_currency": original_currency,
             "original_price": original_price,
+            "per_night": _to_cny(entry.get("per_night"), original_currency),  # 每晚均价（¥）
             "room_name": entry.get("room_name", ""),
+            "meal_plan": entry.get("meal_plan", ""),   # 餐标：含早/仅房间/全食宿...
             "cancel_policy": entry.get("cancel_policy", ""),
+            "mode": entry.get("mode", "parsed"),       # demo / parsed / api / dom...
+            "n_offers": entry.get("n_offers", 0),
             "url": entry.get("url", ""),
             "n_offers": entry.get("n_offers", 0),
             "error": "",

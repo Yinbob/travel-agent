@@ -40,25 +40,43 @@
 ▸ `check_in`（字符串，✅必填）：入住日期，格式YYYY-MM-DD
 ▸ `check_out`（字符串，✅必填）：离店日期，格式YYYY-MM-DD
 
-## 🌐 Agoda / Booking 扩展（可选，hotelrate-mcp）
+### compare_abt
+**Agoda · Booking · 途牛 三方房价对比**：Agoda / Booking 用 hotelrate-crawl 的实时取价方法
+（`LiveQuoteService.quote` → `AgodaCollector` / `BookingCollector`，Playwright 抓包+多级解析；
+演示模式为合成价并在 `demo` 字段标记），途牛走内置代理直连。每行国际平台价格含：
+总价（¥，非 CNY 自动近似折算）、每晚均价（`per_night`）、房型（`room_name`）、
+餐标（`meal_plan`）、取消政策、数据来源标识（`mode`：demo/parsed/api/dom）与平台链接。
+输出三平台价格、最低价平台与订/等信号。（hotelrate-crawl 的数据模型面向房价，
+不含星级/评分等酒店元数据，酒店详情以平台页链接为准。）
 
-`search` / `advisor` 返回前会探测 `.hotelrate-mcp` 运行环境：
+▸ `hotel`（字符串，✅必填）：酒店名称，如"上海外滩华尔道夫"
+▸ `city`（字符串，✅必填）：城市名
+▸ `check_in`（字符串，✅必填）：入住日期，格式YYYY-MM-DD
+▸ `check_out`（字符串，✅必填）：离店日期，格式YYYY-MM-DD
 
-- `advisor`：对查询的酒店补一次 `hotel_quote`（platforms=booking+agoda），把 **Booking / Agoda** 作为两个平台并进比价与"全网最低"判定。
+## 🌐 Agoda / Booking 扩展（可选，hotelrate-crawl）
+
+`search` / `advisor` / `compare_abt` 返回前会探测 `.hotelrate-mcp` 运行环境：
+
+- `advisor` / `compare_abt`：用 **hotelrate-crawl 的取价方法**（不经 MCP 工具转发，
+  直接在 `.hotelrate-mcp` 里调用 `LiveQuoteService.quote`）取 Agoda + Booking 价格，
+  把 **Booking / Agoda** 并进比价与"全网最低"判定（`compare_abt` 仅保留 Agoda·Booking·途牛三家）。
 - `search`：对价格最便宜的前 `HOTELRATE_SPOT_CHECK`（默认 2）家国内结果再做 Agoda/Booking 抽查，更便宜就以新行并入列表。
 - `calendar`：不变（仍扫描国内飞猪源）。
 
-相关文件：`hotelrate_source.py`（开关与降级）、`hotelrate_bridge.py`（子进程桥）。
+相关文件：`hotelrate_source.py`（开关与降级）、`hotelrate_bridge.py`（子进程：直接调用
+hotelrate-crawl 的 `LiveQuoteService` / `AgodaCollector` / `BookingCollector`）。
 配置（`travel-agent/.env`）：`HOTELRATE_MCP_ENABLED` / `HOTELRATE_DEMO`（默认 true=合成价）
 / `HOTELRATE_CURRENCY`（默认 CNY，非 CNY 按内置近似汇率折算）
 / `HOTELRATE_SPOT_CHECK` / `HOTELRATE_QUOTE_TIMEOUT`（默认 90s）。
-环境不存在、未启用或查询失败时自动降级为纯国内平台结果。
+环境不存在、未启用或查询失败时自动降级（`compare_abt` 会返回两家的"未启用"错误行与途牛结果）。
 
 ## 📝 使用示例
 
 ▸ "上海7月1号到3号住哪便宜" → search
 ▸ "下周哪天住外滩最便宜" → calendar
 ▸ "华尔道夫现在订还是再等等" → advisor
+▸ "上海外滩华尔道夫 三方比价" → compare_abt
 ▸ "北京五一酒店比价" → search
 ▸ "广州下周哪天住最划算" → calendar
 

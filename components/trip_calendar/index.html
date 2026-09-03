@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body {
+    --text:#263238; --muted:#78909C; --cell:#FAFAFA; --cell-b:#ECEFF1;
+    --wknd:#FFF8F0; --wknd-b:#FFE8CC; --trip:#E3F2FD; --trip-b:#90CAF9;
+    --sel-b:#29B6F6; --sel-bg:#E1F5FE; --badge:#1565C0;
+    --daynum:#455A64; --dim:#CFD8DC;
+    font-family: "Source Sans Pro", "Segoe UI", "Microsoft YaHei", sans-serif;
+    color: var(--text);
+  }
+  body[data-theme="dark"] {
+    --text:#eceff1; --muted:#9aa7ad; --cell:#262730; --cell-b:#34363e;
+    --wknd:#2b2823; --wknd-b:#4a3f2e; --trip:#0d3a5c; --trip-b:#1e6ea8;
+    --sel-bg:#0d4a73; --badge:#1976D2; --daynum:#cfd8dc; --dim:#5c666c;
+  }
+  table.trip-cal {
+    width: 100%; border-collapse: separate; border-spacing: 6px;
+    table-layout: fixed; margin: .25rem 0;
+  }
+  .trip-cal th {
+    font-size: .9rem; color: var(--muted); font-weight: 600;
+    text-align: center; padding-bottom: 2px;
+  }
+  .cal-cell {
+    height: 108px; vertical-align: top; border-radius: 10px;
+    background: var(--cell); border: 1px solid var(--cell-b);
+    padding: 6px 4px; text-align: center; overflow: hidden;
+  }
+  .cal-cell.weekend { background: var(--wknd); border-color: var(--wknd-b); }
+  .cal-cell.outside { background: transparent; border-color: transparent; }
+  .cal-num { margin: 2px 0 4px; }
+  .cal-daynum {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 30px; height: 30px; border-radius: 50%;
+    font-weight: 600; color: var(--daynum); font-size: .95rem;
+  }
+  .cal-daynum.today { background: #29B6F6; color: #fff; }
+  .cal-cell.trip {
+    background: var(--trip); border-color: var(--trip-b); cursor: pointer;
+    transition: transform .15s ease, box-shadow .15s ease;
+  }
+  .cal-cell.trip:hover { transform: translateY(-2px); box-shadow: 0 4px 10px rgba(41,182,246,.25); }
+  .cal-cell.trip.selected { border: 2px solid var(--sel-b); background: var(--sel-bg); }
+  .cal-cell.trip.selected .cal-daynum {
+    background: #29B6F6; color: #fff;
+    box-shadow: 0 2px 8px rgba(41,182,246,.45);
+  }
+  .cal-badge {
+    display: inline-block; background: var(--badge); color: #fff;
+    border-radius: 999px; font-size: .7rem; padding: 1px 8px; white-space: nowrap;
+  }
+  .cal-desc {
+    font-size: .76rem; color: var(--text); margin-top: 4px; line-height: 1.3;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .cal-meta {
+    font-size: .7rem; color: var(--muted); margin-top: 3px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+(function () {
+  var root = document.getElementById("root");
+
+  function post(type, data) {
+    var msg = Object.assign({ isStreamlitMessage: true, type: type }, data || {});
+    window.parent.postMessage(msg, "*");
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function buildTable(args) {
+    var WD = ["一", "二", "三", "四", "五", "六", "日"];
+    var html = '<table class="trip-cal"><tr>';
+    for (var w = 0; w < 7; w++) html += "<th>" + WD[w] + "</th>";
+    html += "</tr>";
+    (args.weeks || []).forEach(function (week) {
+      html += "<tr>";
+      week.forEach(function (c) {
+        if (c.out) {
+          html += '<td><div class="cal-cell outside"></div></td>';
+          return;
+        }
+        var cls = "cal-cell" + (c.weekend ? " weekend" : "") +
+                  (c.idx ? " trip" : "") + (c.selected ? " selected" : "");
+        var inner = '<div class="cal-num"><span class="cal-daynum' +
+                    (c.today ? " today" : "") + '">' + c.day + "</span></div>";
+        if (c.idx) {
+          inner += '<span class="cal-badge">Day ' + c.idx + "</span>";
+          inner += '<div class="cal-desc">' + esc(c.desc || "") + "</div>";
+          inner += '<div class="cal-meta">🏛️ ' +
+                   (c.n ? c.n + " 个景点" : "休息 / 自由活动") + "</div>";
+        }
+        html += '<td><div class="' + cls + '" data-idx="' + (c.idx || "") + '"' +
+                (c.idx ? ' title="查看 Day ' + c.idx + ' 详细行程"' : "") +
+                ">" + inner + "</div></td>";
+      });
+      html += "</tr>";
+    });
+    html += "</table>";
+    root.innerHTML = html;
+  }
+
+  function setHeight() {
+    post("streamlit:setFrameHeight", { height: root.scrollHeight + 4 });
+  }
+
+  window.addEventListener("message", function (event) {
+    var msg = event.data || {};
+    if (msg.type !== "streamlit:render") return;
+    var theme = msg.theme || {};
+    document.body.setAttribute("data-theme", theme.base === "dark" ? "dark" : "light");
+    buildTable((msg.args || {}).data || {});
+    setHeight();
+  });
+
+  root.addEventListener("click", function (e) {
+    var cell = e.target.closest(".cal-cell.trip");
+    if (!cell) return;
+    var idx = parseInt(cell.getAttribute("data-idx"), 10);
+    if (idx) post("streamlit:setComponentValue", { value: idx, dataType: "int" });
+  });
+
+  post("streamlit:componentReady", { apiVersion: 1 });
+})();
+</script>
+</body>
+</html>

@@ -1,10 +1,19 @@
 """智能旅行 & 酒店比价助手 — Streamlit Web 界面。"""
 import asyncio
+import calendar
 import json
+import re
 import urllib.parse
-from datetime import date
+from datetime import date, timedelta
 
 import streamlit as st
+from pathlib import Path
+from streamlit.components.v1 import declare_component
+
+trip_calendar = declare_component(
+    "trip_calendar",
+    path=str(Path(__file__).parent / "components" / "trip_calendar"),
+)
 
 # ---- 页面配置 ----
 st.set_page_config(
@@ -107,6 +116,54 @@ st.markdown("""
         transform: translateY(-2px);
         box-shadow: 0 4px 12px rgba(74, 144, 217, .35);
     }
+
+    /* ===== 行程日历 ===== */
+    .trip-cal {
+        width: 100%; border-collapse: separate; border-spacing: 6px;
+        table-layout: fixed; margin: .25rem 0;
+    }
+    .trip-cal th {
+        font-size: .9rem; color: #78909C; font-weight: 600;
+        text-align: center; padding-bottom: 2px;
+    }
+    .cal-cell {
+        height: 108px; vertical-align: top; border-radius: 10px;
+        background: #FAFAFA; border: 1px solid #ECEFF1; padding: 6px 4px;
+        text-align: center; overflow: hidden;
+    }
+    .cal-cell.weekend { background: #FFF8F0; border-color: #FFE8CC; }
+    .cal-cell.outside { background: transparent; border-color: transparent; }
+    .cal-num { margin: 2px 0 4px; }
+    .cal-daynum {
+        display: inline-flex; align-items: center; justify-content: center;
+        min-width: 30px; height: 30px; border-radius: 50%;
+        font-weight: 600; color: #455A64; font-size: .95rem;
+    }
+    .cal-daynum.dim { color: #CFD8DC; font-weight: 500; }
+    .cal-cell.trip { background: #E3F2FD; border-color: #90CAF9; }
+    .cal-cell.trip:hover .cal-daynum { background: #B3E5FC; }
+    .cal-cell.trip.selected { border: 2px solid #29B6F6; background: #E1F5FE; }
+    .cal-cell.trip.selected .cal-daynum {
+        background: #29B6F6; color: #fff;
+        box-shadow: 0 2px 8px rgba(41, 182, 246, .45);
+    }
+    .cal-link { display: block; text-decoration: none; color: inherit; height: 100%; }
+    .cal-badge {
+        display: inline-block; background: #1565C0; color: #fff;
+        border-radius: 999px; font-size: .7rem; padding: 1px 8px;
+        white-space: nowrap;
+    }
+    .cal-cell.trip.selected .cal-badge { background: #0288D1; }
+    .cal-desc {
+        font-size: .76rem; color: #263238; margin-top: 4px; line-height: 1.3;
+        display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+        overflow: hidden;
+    }
+    .cal-meta {
+        font-size: .7rem; color: #607D8B; margin-top: 3px;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .cal-month-label { font-size: 1.2rem; font-weight: 700; color: #1565C0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -433,6 +490,116 @@ _STREAM_LABELS = {
 _STATUS_EMOJIS = ["🌤️", "🔍", "📍", "📄", "🚶", "🚗", "🚌", "🚲", "🏨", "📅", "🧭"]
 
 
+# ==================== 行程日历 ====================
+
+def _trip_calendar_data(year: int, month: int, day_by_date: dict, selected: int) -> dict:
+    """构建月历数据：行程日带 Day 序号与概述，供可点击日历组件渲染。"""
+    today = date.today()
+    weeks = []
+    for week in calendar.Calendar(firstweekday=0).monthdatescalendar(year, month):
+        cells = []
+        for d in week:
+            if d.month != month:
+                cells.append({"out": True})
+                continue
+            entry = day_by_date.get(d.isoformat())
+            cell = {
+                "day": d.day,
+                "weekend": d.weekday() >= 5,
+                "today": d == today,
+            }
+            if entry is not None:
+                idx, day = entry
+                cell.update({
+                    "idx": idx,
+                    "selected": idx == selected,
+                    "desc": day.get("description") or "",
+                    "n": len(day.get("attractions", [])),
+                })
+            cells.append(cell)
+        weeks.append(cells)
+    return {"weeks": weeks}
+
+
+def _render_day_details(day: dict, idx: int, plan_city: str):
+    """渲染选中日的详细行程（住宿 / 景点 / 餐饮）。"""
+    from render import attraction_photo, attraction_map_image
+
+    d = day.get("date", "")[-5:]
+    st.markdown(
+        f'<div class="day-header fade-in">📅 {d}  Day {idx} · {day.get("description", "")}</div>',
+        unsafe_allow_html=True,
+    )
+
+    # 住宿
+    hotel = day.get("hotel", {})
+    if hotel.get("name"):
+        st.markdown(
+            f"🏨 **{hotel['name']}**  ★{hotel.get('rating', '-')}  "
+            f"¥{hotel.get('estimated_cost', 0)}/晚  |  {hotel.get('address', '')}"
+        )
+    st.caption(f"🚌 {day.get('transportation', '')}")
+
+    # 景点
+    attractions = day.get("attractions", [])
+    if attractions:
+        st.markdown("**🏛️ 景点**")
+        for a in attractions:
+            ticket = a.get("ticket_price", 0)
+            ts = "🆓 免费" if ticket == 0 else f"🎫 ¥{ticket}"
+            with st.container(border=True):
+                name = a.get("name", "景点")
+                img_url = a.get("image_url") or ""
+                if not img_url:
+                    img_url = attraction_photo(name, plan_city) or ""
+                is_map = False
+                if not img_url:
+                    img_url = attraction_map_image(a.get("location") or {}) or ""
+                    is_map = True
+                if img_url:
+                    if is_map:
+                        st.markdown(
+                            f"""
+                            <div style="position:relative;border-radius:8px;overflow:hidden;margin-bottom:.5rem">
+                              <img src="{img_url}" style="width:100%;display:block;border-radius:8px" />
+                              <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-100%)">
+                                <div style="width:14px;height:14px;background:#FF4444;border:3px solid #fff;border-radius:50%;box-shadow:0 2px 6px rgba(0,0,0,.4);animation:pulse 2s infinite"></div>
+                                <div style="width:2px;height:14px;background:#FF4444;margin:-1px auto 0"></div>
+                              </div>
+                              <div style="position:absolute;top:12px;left:12px;background:rgba(255,255,255,.95);color:#c0392b;font-weight:600;padding:3px 10px;border-radius:14px;font-size:.85rem;box-shadow:0 1px 4px rgba(0,0,0,.15)">📍 {name}</div>
+                            </div>
+                            <style>@keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:.4}}}}</style>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.image(img_url, use_container_width=True)
+                st.markdown(
+                    f"**{name}**  |  {a.get('category', '')}  |  "
+                    f"⏱️ {a.get('visit_duration', 0)}分钟  |  {ts}"
+                )
+                if a.get("address"):
+                    st.caption(f"📍 {a['address']}")
+                a_desc = a.get("description")
+                if a_desc:
+                    st.markdown(f"<div style='color:#555;font-size:.9rem;margin-top:.3rem'>{a_desc}</div>",
+                                unsafe_allow_html=True)
+
+    # 餐饮
+    meals = day.get("meals", [])
+    if meals:
+        st.markdown("**🍽️ 餐饮推荐**")
+        mt = {"breakfast": "🌅 早餐", "lunch": "☀️ 午餐", "dinner": "🌙 晚餐"}
+        meal_cols = st.columns(len(meals))
+        for j, m in enumerate(meals):
+            label = mt.get(m.get("type", ""), "餐")
+            with meal_cols[j]:
+                st.markdown(
+                    f"*{label}*\n\n**{m.get('name', '?')}**  \n"
+                    f"¥{m.get('estimated_cost', 0)}"
+                )
+
+
 def travel_mode():
     # ============ 侧边栏: 参数输入 ============
     with st.sidebar:
@@ -563,6 +730,8 @@ def travel_mode():
                     st.session_state.plan_data = plan
                     st.session_state.plan_raw = full_text
                     st.session_state.status_lines = status_lines
+                    st.session_state.selected_day = 1
+                    st.session_state.pop("trip_calendar", None)
 
                     status.update(label="✅ 旅行计划生成完成！", state="complete", expanded=False)
                 except Exception as e:
@@ -632,88 +801,45 @@ def travel_mode():
                     unsafe_allow_html=True,
                 )
 
-    # ---- 每日行程 ----
+    # ---- 每日行程（月历视图） ----
     st.markdown("---")
     st.markdown("##### 📅 每日行程")
 
     days = plan.get("days", [])
     if days:
-        tabs = st.tabs([f"Day {d.get('day_index', i) + 1}" for i, d in enumerate(days)])
-        for i, (tab, day) in enumerate(zip(tabs, days)):
-            with tab:
-                d = day.get("date", "")[-5:]
-                desc = day.get("description", "")
+        day_by_date = {}
+        idx_to_day = {}
+        for i, day in enumerate(days):
+            idx_to_day[i + 1] = day
+            dstr = day.get("date", "")
+            if dstr:
+                day_by_date[dstr] = (i + 1, day)
 
-                st.markdown(f'<div class="day-header fade-in">📅 {d}  {desc}</div>', unsafe_allow_html=True)
+        trip_dates = sorted(day_by_date)
+        try:
+            cal_start = date.fromisoformat(trip_dates[0])
+        except ValueError:
+            cal_start = date.today()
 
-                # 住宿
-                hotel = day.get("hotel", {})
-                if hotel.get("name"):
-                    st.markdown(
-                        f"🏨 **{hotel['name']}**  ★{hotel.get('rating', '-')}  "
-                        f"¥{hotel.get('estimated_cost', 0)}/晚  |  {hotel.get('address', '')}"
-                    )
-                st.caption(f"🚌 {day.get('transportation', '')}")
+        selected = st.session_state.get("selected_day", 1)
+        picked = st.session_state.get("trip_calendar")
+        if picked is not None and picked in idx_to_day:
+            selected = picked
+            st.session_state.selected_day = picked
+        if selected not in idx_to_day:
+            selected = 1
 
-                # 景点
-                attractions = day.get("attractions", [])
-                if attractions:
-                    st.markdown("**🏛️ 景点**")
-                    from render import attraction_photo, attraction_map_image
-                    for a in attractions:
-                        ticket = a.get("ticket_price", 0)
-                        ts = "🆓 免费" if ticket == 0 else f"🎫 ¥{ticket}"
-                        with st.container(border=True):
-                            name = a.get("name", "景点")
-                            img_url = a.get("image_url") or ""
-                            if not img_url:
-                                img_url = attraction_photo(name, plan_city) or ""
-                            is_map = False
-                            if not img_url:
-                                img_url = attraction_map_image(a.get("location") or {}) or ""
-                                is_map = True
-                            if img_url:
-                                if is_map:
-                                    st.markdown(
-                                        f"""
-                                        <div style="position:relative;border-radius:8px;overflow:hidden;margin-bottom:.5rem">
-                                          <img src="{img_url}" style="width:100%;display:block;border-radius:8px" />
-                                          <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-100%)">
-                                            <div style="width:14px;height:14px;background:#FF4444;border:3px solid #fff;border-radius:50%;box-shadow:0 2px 6px rgba(0,0,0,.4);animation:pulse 2s infinite"></div>
-                                            <div style="width:2px;height:14px;background:#FF4444;margin:-1px auto 0"></div>
-                                          </div>
-                                          <div style="position:absolute;top:12px;left:12px;background:rgba(255,255,255,.95);color:#c0392b;font-weight:600;padding:3px 10px;border-radius:14px;font-size:.85rem;box-shadow:0 1px 4px rgba(0,0,0,.15)">📍 {name}</div>
-                                        </div>
-                                        <style>@keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:.4}}}}</style>
-                                        """,
-                                        unsafe_allow_html=True,
-                                    )
-                                else:
-                                    st.image(img_url, use_container_width=True)
-                            st.markdown(
-                                f"**{name}**  |  {a.get('category', '')}  |  "
-                                f"⏱️ {a.get('visit_duration', 0)}分钟  |  {ts}"
-                            )
-                            if a.get("address"):
-                                st.caption(f"📍 {a['address']}")
-                            desc = a.get("description")
-                            if desc:
-                                st.markdown(f"<div style='color:#555;font-size:.9rem;margin-top:.3rem'>{desc}</div>",
-                                            unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="cal-month-label fade-in">{cal_start.year}年{cal_start.month}月</div>',
+            unsafe_allow_html=True,
+        )
+        trip_calendar(
+            data=_trip_calendar_data(cal_start.year, cal_start.month, day_by_date, selected),
+            key="trip_calendar",
+        )
+        st.caption("💡 点击日历中的行程日期，可在下方查看当天详细行程")
 
-                # 餐饮
-                meals = day.get("meals", [])
-                if meals:
-                    st.markdown("**🍽️ 餐饮推荐**")
-                    mt = {"breakfast": "🌅 早餐", "lunch": "☀️ 午餐", "dinner": "🌙 晚餐"}
-                    meal_cols = st.columns(len(meals))
-                    for j, m in enumerate(meals):
-                        label = mt.get(m.get("type", ""), "餐")
-                        with meal_cols[j]:
-                            st.markdown(
-                                f"*{label}*\n\n**{m.get('name', '?')}**  \n"
-                                f"¥{m.get('estimated_cost', 0)}"
-                            )
+        _render_day_details(idx_to_day[selected], selected, plan_city)
 
     # ---- 预算 ----
     budget = plan.get("budget", {})

@@ -15,11 +15,12 @@ Web 界面在侧边栏顶部切换两个功能模式。
 | 能力 | 说明 |
 |------|------|
 | 🌤️ 实时天气 | 通过高德 MCP `maps_weather` 获取目的地天气，标题下带 msn.cn 天气链接 |
-| 🏛️ 智能景点推荐 | 子 Agent 真实调用高德 POI 搜索，按用户偏好匹配景点 |
+| 🏛️ 智能景点推荐 | Planner Agent 直接调用高德 POI 搜索，按用户偏好匹配景点，附带真实风景照片与详细介绍 |
 | 🏨 酒店推荐 | 结合区域 / 地标 / 预算推荐酒店，规划完成后附带多平台比价结论 |
 | 🗺️ 路线规划 | 高德步行 / 驾车 / 公交路线，先地理编码再规划 |
+| 🖼️ 景点配图 | 优先使用高德 POI 自带的真实风景照片 URL，无则兜底静态地图底图 |
 | 📊 预算汇总 | 自动汇总门票、酒店、餐饮、交通与总预算 |
-| 📥 Markdown 导出 | 下载完整计划（含天气、行程、预算、酒店比价） |
+| 📥 PDF 导出 | 一键下载精美排版 PDF（封面、天气表格、每日行程、预算高亮、酒店比价、页码） |
 | 🏨 酒店比价 | 行程中的 `hotel_comparison` 板块展示最低平台 / 最低价 / 订/等/观望信号 |
 
 ### 🏨 酒店比价（独立模式，无需任何 API Key）
@@ -87,8 +88,8 @@ AMAP_MAPS_API_KEY=xxxxxxxx
 ### 5. 启动
 
 ```powershell
-# Web 界面（双模式）
-streamlit run app.py
+# Web 界面（双模式）—— Windows 推荐加 fileWatcherType poll 防止热加载缓存问题
+streamlit run app.py --server.fileWatcherType poll
 ```
 
 浏览器访问 `http://localhost:8501`。
@@ -104,19 +105,18 @@ python Agent.py
 
 ```
 travel-agent/
-├── app.py                   # Streamlit 双模式界面（旅行规划 / 酒店比价）+ 动效
+├── app.py                   # Streamlit 双模式界面（旅行规划 / 酒店比价）+ 动效 + PDF 导出
 ├── Agent.py                 # CLI 演示入口（流式收集 + 格式化输出）
-├── config.py                # 配置中心：Key、模型、MCP 领域映射、ChatTongyi 补丁
+├── config.py                # 配置中心：Key、模型(qwen-plus)、MCP 领域映射
 ├── mcp_client.py            # MCP 客户端管理器：高德(HTTP) + 酒店(stdio) 双服务单例
 ├── hotel_compare.py         # 酒店比价独立调用器（无需 DashScope Key）
-├── prompts.py               # 三个子 Agent + Planner 系统提示词
-├── render.py                # JSON 容错解析 + CLI/Web 渲染
-├── requirements.txt         # 主环境依赖（含 mcp<2 固定）
+├── prompts.py               # Planner Agent 系统提示词（含 image_url 提取要求）
+├── render.py                # JSON 容错解析 + CLI/Web 渲染 + 景点图片获取 + PDF 生成
+├── requirements.txt         # 主环境依赖（含 reportlab）
 ├── .env                     # 本地密钥（不入库）
 ├── .hotel-mcp/              # 酒店比价运行环境 venv（不入库）
 ├── agents/
-│   ├── planner.py           # 总控 Agent：编排子 Agent + 酒店比价工具
-│   └── specialist.py        # 领域专家 Agent（Hotel / Attraction / Weather）
+│   └── planner.py           # Planner Agent：直接持有 MCP 工具（无嵌套子 Agent）
 └── mcp_hotel_smart_book/    # 内置酒店比价 FastMCP 服务（search/calendar/advisor）
     ├── server.py
     ├── __init__.py / __main__.py
@@ -131,22 +131,24 @@ travel-agent/
 ┌──────────────────────────────────────────────────────────────┐
 │                    Streamlit UI (app.py)                     │
 │   功能模式：🧳 智能旅行规划  /  🏨 酒店比价                   │
+│   渲染：天气卡片 / 每日行程 / 景点配图(真实照片) / PDF 导出    │
 └───────────────┬──────────────────────────┬───────────────────┘
                 │                          │
      ┌──────────▼──────────┐    ┌──────────▼──────────────────┐
-     │ TripPlanner (总控)  │    │ hotel_compare.call_hotel_tool│
+     │ TripPlanner (直连)   │    │ hotel_compare.call_hotel_tool│
      │ create_agent        │    │ (独立比价，按次启动)          │
-     └──┬────────┬─────────┘    └──────────┬───────────────────┘
-        │        │        stdio            │ stdio (fastmcp)
-  子 Agent       │        ┌────────────────▼──────────────────┐
-（专家Agent）    │        │  .hotel-mcp 里的酒店比价服务        │
-  真实调用工具    │        │  mcp_hotel_smart_book/server.py   │
-        │        │        └────────────────────────────────────┘
-┌───────▼────────────────┴───────────────────────────┐
-│            MultiServerMCPClient (langchain)         │
-│  amap-server: https://mcp.amap.com/mcp?key=… (HTTP) │
-│  hotel-server: stdio → .hotel-mcp 子进程             │
-└──────────────────────────────────────────────────────┘
+     │ Planner 直接持有    │    └──────────┬───────────────────┘
+     │ 高德 MCP + 酒店工具  │               │ stdio (fastmcp)
+     └──────────┬──────────┘    ┌──────────▼──────────────────┐
+                │                │  .hotel-mcp 里的酒店比价服务
+                │                │  mcp_hotel_smart_book/server.py
+                │                └────────────────────────────────┘
+  并行调用 MCP（LangGraph 自动并行多工具调用）
+┌───────────────▼─────────────────────────────────────────┐
+│            MultiServerMCPClient (langchain)              │
+│  amap-server: https://mcp.amap.com/mcp?key=… (HTTP)     │
+│  hotel-server: stdio → .hotel-mcp 子进程                  │
+└──────────────────────────────────────────────────────────┘
 ```
 
 **关键设计**
@@ -165,7 +167,7 @@ travel-agent/
 - `DASHSCOPE_API_KEY`（LLM）与 `AMAP_MAPS_API_KEY`（高德 MCP）从 `.env` / 环境变量读取；仅 LLM Key 在导入时强校验。
 - `tool_domains` 将工具分为 `poi / weather / route / hotel` 四组，`maps_geo` 归入 route 组供总控做地理编码。
 - `map_mcp_url()`：自动为 `mcp.amap.com/mcp` 拼接 `?key=`，未配置高德 Key 时抛出明确中文提示。
-- `create_llm()`：通义千问 `qwen3-max`，**`streaming=False`** 且 `max_tokens=8192`——实测 qwen3-max 流式下最终消息内容会丢失，非流式才能稳定拿到完整 JSON 行程。
+- `create_llm()`：通义千问 `qwen-plus`（速度比 qwen3-max 快 2-3 倍，质量差距小），**`streaming=False`** 且 `max_tokens=8192`——实测流式下最终消息内容会丢失，非流式才能稳定拿到完整 JSON 行程。
 - 内置两处 ChatTongyi 补丁：`subtract_client_response`（流式 tool_calls 缺 key 的 KeyError）与 `convert_message_to_dict`（回传历史时用已解析 `tool_calls` 重建 JSON 参数，避免 `function.arguments must be in JSON format` 400）。
 
 ### mcp_client.py
@@ -181,28 +183,30 @@ travel-agent/
 
 ### agents / prompts
 
-- `specialist.py`：领域专家 Agent，只持有本领域工具（Hotel/Attraction 用 POI 工具、Weather 用天气工具）。
-- `planner.py`：总控 Agent 持有子 Agent 工具 + 高德路线工具 + 酒店比价 `search/calendar/advisor` 工具；`TOOL_LABELS` 把工具调用映射为 UI 状态行；`stream()` 在模型非流式时从 `on_chat_model_end` 捕获最终回复统一补发。
-- `prompts.py`：三个子 Agent 提示词明确要求**真实调用工具并返回中文结果摘要**（不再输出 `[TOOL_CALL:...]` 占位文本）；Planner 提示词定义行程 JSON Schema（含可选 `hotel_comparison`）与“最后只输出 JSON”纪律。
+- **单 Planner Agent**，去掉子 Agent 嵌套。Planner 直接持有全部高德 MCP 工具 + 酒店比价 `search/calendar/advisor` 工具，每步只有 1 次 LLM 往返（原架构 3 层嵌套约 3 次往返）。
+- `prompts.py` 只有一个 `PLANNER_AGENT_PROMPT`，精简后约 1500 字（原 3000 字），明确要求：景点 `description` 写 2-3 句详细介绍、从 POI photos 数组提取 `image_url`、优先并行调用天气/景点/酒店。
+- LangGraph `ToolNode` 自动并行执行多个并发工具调用。
 
 ### render.py / app.py
 
 - `parse_plan()`：去掉代码块包裹 → 首尾大括号解析 → JSONDecoder 容错扫描，多级兜底。
-- 行程页面：天气卡片（带 msn.cn 链接）、每日行程 Tabs、景点/餐饮、预算 Metrics、酒店比价板块、下载 Markdown。
-- 出错时展开 `ExceptionGroup` 叶子错误并给出中文修复提示，不再抛出原始 `ExceptionGroup` 堆栈。
+- `attraction_photo(name, city)`：直接调高德 POI 搜索 REST API（不走 MCP），从返回的 photos 数组拿真实风景照片 URL。
+- `attraction_map_image(location)`：高德静态地图底图 URL（无 markers，纯底图），用于景点照片兜底。
+- `build_pdf(plan)`：reportlab 生成中文 PDF — 自动跨平台找中文字体（Windows 默认 simhei.ttf），封面页 + 天气表格 + 每日行程 + 预算高亮 + 酒店比价 + 页码页脚。
+- 行程页面：天气卡片（带 msn.cn 链接）、每日行程 Tabs、景点卡片（真实风景照 → 兜底地图底图 + CSS 红点标记 → 纯文字）、餐饮、预算 Metrics、酒店比价、PDF 下载按钮。
+- 出错时展开 `ExceptionGroup` 叶子错误并给出中文修复提示。
 
 ---
 
 ## 📡 数据流（旅行规划一次执行）
 
-1. 用户点击「🚀 开始规划」，`TripPlanner.stream()` 初始化：加载高德工具 + 启动酒店比价子服务并缓存。
-2. 总控 Agent 按工作流调用：
-   - `query_weather` → WeatherAgent → `maps_weather`
-   - `search_hotel` / `search_attraction` → 专家 Agent → `maps_text_search / maps_around_search / maps_search_detail`
-   - `maps_geo` → 地址转经纬度 → `maps_direction_*` 规划路线
-   - `search / calendar / advisor` → 酒店比价服务（可选步骤）
-3. 各工具结果作为文本摘要回传模型；所有工具完成后模型输出**单个 JSON 计划**。
-4. `parse_plan` 解析 → 存入 `session_state` → `st.rerun()` → 渲染行程与比价板块。
+1. 用户点击「🚀 开始规划」，`TripPlanner.stream()` 初始化：加载全部高德工具 + 启动酒店比价子服务并缓存。
+2. Planner Agent 直接调用 MCP 工具：
+   - 首次回复并行发出 `maps_weather` + `maps_text_search(景点)` + `maps_text_search(酒店)` — LangGraph ToolNode 并行执行
+   - `maps_geo` → 地址转经纬度 → `maps_direction_*` 规划 Day 首尾景点路线
+   - 酒店比价 `search / calendar / advisor`（可选步骤）
+3. 全部工具完成后模型输出**单个 JSON 计划**（含 `image_url` 从 POI photos 提取）。
+4. `parse_plan` 解析 → 存入 `session_state` → `st.rerun()` → 渲染行程（景点真实照片）与 PDF 导出按钮。
 
 ---
 
@@ -231,6 +235,10 @@ travel-agent/
 4. ChatTongyi 历史回传 `function.arguments` 非 JSON → monkey-patch `convert_message_to_dict` 重建干净 tool_calls。
 5. `langchain-mcp-adapters` 与 mcp 2.x 不兼容 → 主环境固定 mcp 1.x；酒店服务跑在独立 `.hotel-mcp` venv（fastmcp 4 + mcp 2）。
 6. UI 原始 `ExceptionGroup` 堆栈不可读 → 展开叶子错误并显示中文修复提示。
+7. 速度优化：去掉子 Agent 嵌套，Planner 直接持有 MCP 工具（每步从 3 次 LLM 往返降到 1 次）；换 `qwen-plus`（比 qwen3-max 快 2-3 倍）；精简 prompt 从 3000 字到 1500 字，引导首次回复并行发出天气+景点+酒店工具调用。
+8. 景点真实配图：`render.attraction_photo()` 直接调高德 POI REST API 拿 photos[0].url；Prompt 要求 LLM 从 MCP 结果提取 `image_url`；UI 三级降级（真实照片 → 兜底高德查询 → 地图底图）。
+9. PDF 导出：Markdown 下载改为 reportlab PDF（封面页 + 天气表格 + 每日行程 + 预算高亮 + 酒店比价 + 页码），自动跨平台发现中文字体。
+10. Windows Streamlit 热加载缓存问题 → 推荐用 `--server.fileWatcherType poll` 启动。
 
 ---
 
@@ -246,6 +254,9 @@ mcp>=1.24,<2
 streamlit
 python-dotenv
 dashscope
+reportlab
 ```
+
+> `reportlab`（v5.0.1）用于 PDF 生成，自动跨平台发现系统中文字体（Windows 默认 simhei.ttf / 黑体）。
 
 `.hotel-mcp` venv 内：`fastmcp`（自动携带 mcp 2.x）。

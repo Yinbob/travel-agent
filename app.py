@@ -747,7 +747,7 @@ st.markdown(
 
 
 _AMBIENT_GLOW_HTML = """
-<div id="ambient-glow" aria-hidden="true" style="position:fixed;inset:0;z-index:999980;pointer-events:none">
+<div id="ambient-glow" aria-hidden="true" style="position:fixed;inset:0;z-index:0;pointer-events:none">
   <canvas id="ambient-glow-canvas" style="position:fixed;inset:0;width:100vw;height:100vh"></canvas>
 </div>
 <script>

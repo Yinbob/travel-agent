@@ -1514,7 +1514,7 @@ def _run_hotel_tool(tool_name: str, args: dict, status_label: str) -> dict | Non
     with st.status(status_label, expanded=True) as status:
         try:
             st.write("🔌 启动酒店比价服务...")
-            st.write("📡 正在查询多平台实时价格...")
+            st.write("📡 正在查询实时价格...")
 
             async def _call():
                 return await call_hotel_tool(tool_name, args)
@@ -1678,7 +1678,7 @@ def hotel_mode():
             result = _run_hotel_tool("search", {
                 "city": h_city.strip(), "check_in": ci, "check_out": co,
                 "keyword": h_keyword.strip(),
-            }, "🔍 正在搜索多平台酒店价格...")
+            }, "🔍 正在搜索酒店价格...")
             if result is not None:
                 st.session_state.hotel_result = {"tool": "search", "data": result}
 
@@ -1705,16 +1705,16 @@ def hotel_mode():
             result = _run_hotel_tool("advisor", {
                 "hotel": h_hotel.strip(), "city": h_city.strip(),
                 "check_in": ci, "check_out": co,
-            }, "🧭 正在进行多平台订房决策分析...")
+            }, "🧭 正在进行订房决策分析...")
             if result is not None:
                 st.session_state.hotel_result = {"tool": "advisor", "data": result}
 
     # ---- 结果展示 ----
     hotel_result = st.session_state.get("hotel_result")
     if hotel_result is None:
-        st.caption("✨ 聚合飞猪、途牛、RG、同程四源价格，支持比价 / 低价日历 / 订房决策")
+        st.caption("途牛实时房价分析 / 低价日历 / 订房决策")
         _feature_card_grid([
-            ("🔍", "多平台实时比价",
+            ("🔍", "实时比价",
              "飞猪 + 途牛 + RG + 同程四源实时对比，找到最低价"),
             ("📅", "低价日历",
              "一键扫描 7-30 天价格洼地，找到最便宜的入住日期"),
@@ -1792,6 +1792,266 @@ _STREAM_LABELS = {
 
 _STATUS_EMOJIS = ["🌤️", "🔍", "📍", "📄", "🚶", "🚗", "🚌", "🚲", "🏨", "📅", "🧭"]
 
+
+
+# ==================== 一句话（Gemini 式）文字生成计划 ====================
+
+_HH_EXAMPLES = [
+    (
+        "🌆 成都 4 日 · 美食文化",
+        "国庆想去成都玩 4 天 3 晚（10月1日-10月4日），喜欢美食探店和历史文化，"
+        "中等预算，住在宽窄巷子附近，节奏不想太赶。",
+    ),
+    (
+        "🏖️ 三亚 5 日 · 亲子度假",
+        "打算带 6 岁孩子去三亚 5 天 4 晚，喜欢海滩和水上乐园，"
+        "总预算 1 万元以内，想住亚龙湾，行程轻松一点。",
+    ),
+    (
+        "🏔️ 杭州 3 日 · 自然人文",
+        "下周末想去杭州 3 天，喜欢自然风光和茶文化，想去西湖、龙井村和九溪，"
+        "以公共交通为主，偏好民宿。",
+    ),
+]
+
+
+def _show_plan_error(exc: BaseException) -> None:
+    """统一展示规划失败的错误信息与排查提示。"""
+    traceback.print_exc()
+    st.error("生成旅行计划时出错：" + "；".join(_exception_leaves(exc)))
+    st.info(
+        "可能原因：\n"
+        "1. 地图服务已切换为高德开放平台官方 MCP，请在 `travel-agent/.env` 配置 `AMAP_MAPS_API_KEY`（Web 服务类型 Key）；\n"
+        "2. `DASHSCOPE_API_KEY` 缺失、过期或无效（LLM 生成 401/InvalidApiKey）——请同时确认它已配置；\n"
+        "3. 高德 MCP 端点 `mcp.amap.com` 网络不可达；\n"
+        "4. 本地酒店比价服务未初始化（报错中如含 `.hotel-mcp`，请执行 `python -m venv .hotel-mcp` 并 `pip install fastmcp`）。"
+    )
+
+
+def _run_planner(prompt: str, chip=None, progress_bar=None) -> None:
+    """流式驱动规划 Agent：模块进度芯片 + 纤细进度条，成功后写入 session 状态。
+
+    chip / progress_bar 可复用外部进度组件，用于「阶段1理解 + 阶段2规划」连续展示；
+    不传则自行创建。
+    """
+    from render import parse_plan
+
+    planner = get_planner()
+    if chip is None:
+        chip = st.empty()
+    if progress_bar is None:
+        progress_bar = st.progress(0.02)
+
+    def _update_progress(
+        value: float,
+        message: str,
+        collected: int = 0,
+        state: str = "running",
+    ) -> None:
+        chip.markdown(
+            _progress_chip_html(value, message, collected, state),
+            unsafe_allow_html=True,
+        )
+        progress_bar.progress(min(max(float(value), 0.0), 1.0))
+
+    _update_progress(0.02, "正在初始化生成引擎…", 0)
+
+    tokens: list[str] = []
+    status_lines: list[str] = []
+    module_seen: list[str] = []
+    for attempt in range(2):
+        async def _collect():
+            results = []
+            module_seen.clear()
+            status_lines.clear()
+            async for token in planner.stream(prompt):
+                stripped = token.strip()
+                if any(
+                    stripped.startswith(emoji)
+                    for emoji in _STATUS_EMOJIS
+                ):
+                    status_lines.append(stripped)
+                    if stripped not in module_seen:
+                        module_seen.append(stripped)
+                        _update_progress(
+                            min(0.08 + len(module_seen) * 0.065, 0.90),
+                            stripped,
+                            len(module_seen),
+                        )
+                results.append(token)
+            return results
+
+        try:
+            tokens = asyncio.run(_collect())
+            break
+        except Exception as exc:
+            if attempt == 0 and _is_broken_resource_exc(exc):
+                traceback.print_exc()
+                st.warning(
+                    "检测到地图/酒店 MCP 连接中断（BrokenResourceError），"
+                    "正在重建连接并自动重试，请稍候…"
+                )
+                _update_progress(
+                    0.03,
+                    "MCP 连接中断，正在重建连接并自动重试…",
+                    len(module_seen),
+                )
+                from mcp_client import McpClientManager
+
+                McpClientManager.reset()
+                get_planner.cache_clear()
+                planner = get_planner()
+                continue
+            raise
+
+    try:
+        _update_progress(0.95, "数据已就绪，正在整理最终行程…", len(module_seen))
+        full_text = "".join(tokens)
+        plan = parse_plan(full_text)
+        if plan is None:
+            snippet = full_text.strip()
+            if len(snippet) > 300:
+                snippet = snippet[:300] + "…"
+            raise RuntimeError(
+                "模型未返回可解析的旅行计划 JSON"
+                + (f"，输出片段：{snippet}" if snippet else "（输出为空）")
+            )
+        st.session_state.plan_data = plan
+        st.session_state.plan_raw = full_text
+        st.session_state.status_lines = status_lines
+        st.session_state.selected_day = 1
+        for state_key in list(st.session_state.keys()):
+            if state_key.startswith("trip_calendar"):
+                st.session_state.pop(state_key, None)
+        _update_progress(1.0, "旅行计划生成完成", len(module_seen), state="done")
+    except Exception:
+        try:
+            _update_progress(1.0, "行程生成失败", 0, state="error")
+        except Exception:
+            pass
+        raise
+
+
+def _hh_understand(user_text: str) -> tuple[str, str]:
+    """
+    大模型理解阶段：把一段自然语言转成结构化规划请求。
+    返回 (AI 理解要点, 规划请求话术)；任何解析失败都回退为直接使用完整原文。
+    """
+    today = date.today()
+    weekday_cn = "一二三四五六日"[today.weekday()]
+    fallback_prompt = (
+        f"{user_text}。当前日期是 {today:%Y-%m-%d}（星期{weekday_cn}）。"
+    )
+
+    try:
+        from config import CONFIG
+        from langchain_core.messages import HumanMessage, SystemMessage
+        from prompts import REQUEST_ANALYZER_PROMPT
+
+        sys_prompt = (
+            REQUEST_ANALYZER_PROMPT
+            .replace("{today}", today.strftime("%Y-%m-%d"))
+            .replace("{weekday}", f"星期{weekday_cn}")
+        )
+        resp = CONFIG.create_llm().invoke(
+            [SystemMessage(content=sys_prompt), HumanMessage(content=user_text)]
+        )
+        content = str(getattr(resp, "content", "") or "").strip()
+        if not content:
+            raise ValueError("分析模型未返回内容")
+        content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content)
+        start, end = content.find("{"), content.rfind("}")
+        if start == -1 or end <= start:
+            raise ValueError("分析模型未返回 JSON 对象")
+        data = json.loads(content[start:end + 1])
+        if not isinstance(data, dict):
+            raise ValueError("分析 JSON 不是对象")
+
+        city = str(data.get("city") or "").strip()
+        if not city:
+            raise ValueError("未识别出目的地城市")
+
+        raw_start = str(data.get("start_date") or "").strip()
+        duration = 0
+        try:
+            duration = max(0, int(float(data.get("duration_days") or 0)))
+        except (TypeError, ValueError):
+            duration = 0
+
+        start_date = today
+        if raw_start:
+            try:
+                start_date = date.fromisoformat(raw_start)
+            except ValueError:
+                start_date = today
+        days = duration if duration > 0 else 3
+        end_date = start_date + timedelta(days=days - 1)
+
+        preferences = [
+            str(item).strip()
+            for item in (data.get("preferences") or [])
+            if isinstance(data.get("preferences"), list) and str(item).strip()
+        ]
+        transport = [
+            str(item).strip()
+            for item in (data.get("transport") or [])
+            if isinstance(data.get("transport"), list) and str(item).strip()
+        ]
+        hotel_type = str(data.get("hotel_type") or "").strip()
+        extra = str(data.get("extra") or "").strip()
+        budget = str(data.get("budget") or "").strip()
+        analysis = str(data.get("analysis") or "").strip()
+        assumptions = [
+            str(item).strip()
+            for item in (data.get("assumptions") or [])
+            if isinstance(data.get("assumptions"), list) and str(item).strip()
+        ]
+
+        parts = [
+            f"{city}{days}日游",
+            f"{start_date.strftime('%Y年%m月%d日')}-{end_date.strftime('%Y年%m月%d日')}",
+        ]
+        if preferences:
+            parts.append("喜欢" + "、".join(preferences))
+        if hotel_type:
+            parts.append(f"住宿偏好{hotel_type}")
+        if transport:
+            parts.append("交通方式偏好" + "、".join(transport))
+        parts.append(f"预算{budget}" if budget else "中等预算")
+        if extra:
+            parts.append(f"额外要求: {extra}")
+        prompt = "，".join(parts)
+
+        notes = []
+        if not raw_start:
+            notes.append(f"未指定日期，默认 {start_date:%m月%d日} 出发，共 {days} 天")
+        if assumptions:
+            notes.extend(assumptions)
+        summary = analysis
+        if notes:
+            summary = (summary + "；" if summary else "") + "；".join(notes)
+        return summary, prompt
+    except Exception:
+        return (
+            "未能结构化解析，已自动改用完整原文进行规划（会保留相对日期参考）。",
+            fallback_prompt,
+        )
+
+
+def _reset_text_plan() -> None:
+    """清空当前计划与「一句话生成」的会话痕迹，回到文字输入首页。"""
+    for key in (
+        "plan_data",
+        "plan_raw",
+        "status_lines",
+        "selected_day",
+        "hh_last_text",
+        "hh_analysis",
+    ):
+        st.session_state.pop(key, None)
+    for state_key in list(st.session_state.keys()):
+        if state_key.startswith("trip_calendar"):
+            st.session_state.pop(state_key, None)
 
 # ==================== 行程日历 ====================
 
@@ -2008,16 +2268,85 @@ def travel_mode():
         st.markdown("---")
         submit_btn = st.button("🚀 开始规划", type="primary", width="stretch")
 
-    # 未开始时的引导页
+    # 未开始时的引导页：主内容区（右侧）提供 Gemini 式「一句话生成」，
+    # 左侧原有表单参数面板保持不变，两种方式共用同一套规划引擎。
     if not submit_btn and st.session_state.plan_data is None:
-        st.caption("✨ 一站式智能出行：天气、景点、路线、酒店比价与预算自动生成")
+        hero_l, hero_c, hero_r = st.columns([2, 6, 2])
+        with hero_c:
+            st.markdown(
+                '<div class="hh-g-hero">'
+                '<h2 class="hh-g-title">像聊天一样，描述你想要的旅行</h2>'
+                '<p class="hh-g-sub">用一段文字说出目的地、日期 / 天数、预算与喜好。'
+                "AI 会先理解你的需求，再自动完成天气、景点、路线、酒店比价与预算规划。</p>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
+            hh_text = st.text_area(
+                "一句话描述旅程",
+                key="hh_desc",
+                height=100,
+                placeholder=(
+                    "例如：国庆想去成都玩 4 天 3 晚（10月1日出发），喜欢美食和历史文化，"
+                    "中等预算，住宽窄巷子附近，节奏轻松一点…"
+                ),
+                label_visibility="collapsed",
+            )
+            go_l, go_r = st.columns([5, 2])
+            with go_r:
+                hh_go = st.button(
+                    "✨ 生成计划",
+                    type="primary",
+                    key="hh_go_btn",
+                    width="stretch",
+                )
+            st.markdown(
+                '<div class="hh-g-tip">直接点一个示例试试 👇</div>',
+                unsafe_allow_html=True,
+            )
+            ex_cells = st.columns(3)
+            for i, (ex_label, ex_prompt) in enumerate(_HH_EXAMPLES):
+                with ex_cells[i]:
+                    if st.button(ex_label, key=f"hh_ex_{i}", width="stretch"):
+                        hh_text = ex_prompt
+                        hh_go = True
+
+            # 生成进度区：紧跟输入框，示例点击后进度条立即出现；理解 + 规划连续展示
+            if hh_go:
+                if not str(hh_text or "").strip():
+                    st.error("请先在输入框写一段旅行描述，或点击上方示例体验。")
+                else:
+                    user_desc = str(hh_text).strip()
+                    st.session_state.hh_last_text = user_desc
+                    chip = st.empty()
+                    progress_bar = st.progress(0.03)
+
+                    def _set_progress(value, message, collected=0, state="running"):
+                        chip.markdown(
+                            _progress_chip_html(value, message, collected, state),
+                            unsafe_allow_html=True,
+                        )
+                        progress_bar.progress(min(max(float(value), 0.0), 1.0))
+
+                    _set_progress(0.03, "🧠 阶段 1/2 · 大模型正在理解你的描述…")
+                    analysis_txt, hh_prompt = _hh_understand(user_desc)
+                    st.session_state.hh_analysis = analysis_txt
+                    if analysis_txt:
+                        st.caption(analysis_txt)
+                    try:
+                        _run_planner(hh_prompt, chip=chip, progress_bar=progress_bar)
+                    except Exception as e:
+                        _show_plan_error(e)
+                    else:
+                        st.rerun()
+
+        #st.caption("✨ 一站式智能出行：天气、景点、路线、酒店比价与预算自动生成")
         _feature_card_grid([
             ("🌤️", "实时天气查询",
              "接入高德地图 MCP，获取目的地准确天气预报"),
             ("🏛️", "智能景点推荐",
              "根据你的偏好，AI 精准匹配最适合的景点和路线"),
-            ("🏨", "酒店多平台比价",
-             "飞猪 / 途牛 / RG / 同程实时比价，给出订房时机建议"),
+            ("🏨", "酒店房价对比",
+             "途牛实时智能比价，给出最具性价比的订房建议"),
             ("📊", "预算自动汇总",
              "景点门票、餐饮、住宿、交通费用一目了然"),
         ])
@@ -2158,6 +2487,19 @@ def travel_mode():
     if "status_lines" in st.session_state and st.session_state.status_lines:
         with st.expander("🔍 规划过程", expanded=False):
             st.markdown("\n".join(st.session_state.status_lines))
+
+    # ---- 一句话生成的描述回顾 + 重新生成入口 ----
+    hh_last = st.session_state.get("hh_last_text") or ""
+    hh_analysis = st.session_state.get("hh_analysis") or ""
+    if hh_last or hh_analysis:
+        with st.expander("🧠 你的一句话描述 · AI 理解要点", expanded=False):
+            if hh_last:
+                st.markdown(f"**🗣️ 你输入的描述**\n\n{_esc(hh_last)}")
+            if hh_analysis:
+                st.markdown(f"**🧠 AI 理解要点**\n\n{_esc(hh_analysis)}")
+    if st.button("✏️ 用一句话重新生成计划", key="hh_restart"):
+        _reset_text_plan()
+        st.rerun()
 
     # ---- 标题 ----
     plan_city = plan.get("city", "")

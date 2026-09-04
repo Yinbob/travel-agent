@@ -1302,3 +1302,82 @@ body.hh-sb-hidden #hh-sidebar-tab {
         transform: translateY(-50%) translateX(0);
     }
 }
+
+/* ---------- Gemini 式「文字描述生成计划」（旅行模式主区右侧） ---------- */
+.hh-g-hero {
+    text-align: center;
+    margin: 0.8rem auto 1.1rem;
+    max-width: 880px;
+    animation: fadeInUp 0.42s var(--ease-out) both;
+}
+
+.hh-g-badge {
+    display: inline-block;
+    padding: 0.28rem 0.95rem;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent-deep);
+    font-weight: 600;
+    font-size: 0.86rem;
+    letter-spacing: 0.01em;
+    margin-bottom: 0.7rem;
+}
+
+.hh-g-title {
+    font-size: 1.9rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin: 0 auto 0.45rem;
+    color: var(--text);
+}
+
+.hh-g-sub {
+    color: var(--text-soft);
+    font-size: 0.95rem;
+    line-height: 1.7;
+    margin: 0 auto 1rem;
+    max-width: 660px;
+}
+
+/* 正文大输入框：Gemini 风格圆角玻璃框（仅作用于主内容区，不影响侧边栏） */
+section.main [data-testid="stTextArea"] textarea {
+    border-radius: 22px !important;
+    padding: 0.9rem 1.15rem !important;
+    font-size: 1.02rem;
+    line-height: 1.7;
+    color: var(--text) !important;
+    background: rgba(255, 255, 255, 0.94) !important;
+    border: 1px solid var(--line-strong) !important;
+    box-shadow: var(--shadow-md);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    transition: border-color 180ms ease, box-shadow 180ms ease;
+}
+
+section.main [data-testid="stTextArea"] textarea:focus {
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 4px rgba(21, 101, 192, 0.10), var(--shadow-md);
+}
+
+section.main [data-testid="stTextArea"] textarea::placeholder {
+    color: var(--text-faint) !important;
+}
+
+.hh-g-tip {
+    text-align: center;
+    color: var(--text-faint);
+    font-size: 0.8rem;
+    margin-top: 0.35rem;
+}
+
+/* ---------- 让主内容显示在泛光层之上（标题 / 输入框 / 示例 / 进度条等） ---------- */
+section.main .main-header,
+section.main .hh-g-hero,
+section.main [data-testid="stMarkdown"],
+section.main [data-testid="stTextArea"],
+section.main [data-testid="stButton"],
+section.main [data-testid="stProgress"],
+section.main [data-testid="stExpander"] {
+    position: relative;
+    z-index: 2;
+}

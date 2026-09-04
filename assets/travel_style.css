@@ -158,6 +158,8 @@ section.main p {
 }
 
 .weather-card {
+    position: relative;
+    overflow: hidden;
     background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(233, 242, 252, 0.86));
     padding: 0.9rem 0.7rem;
     margin: 0.4rem 0;
@@ -167,6 +169,63 @@ section.main p {
 .weather-card b {
     color: var(--accent);
 }
+
+/* ---------- 天气卡片：按天气类型的差异化背景 ---------- */
+.weather-card.wx-sunny {
+    background:
+        radial-gradient(110px 80px at 88% 16%, rgba(255, 193, 7, 0.50), transparent 66%),
+        linear-gradient(165deg, #fff9e6, #ffeccb 55%, #ffdda8);
+    border: 1px solid rgba(255, 179, 0, 0.35);
+}
+.weather-card.wx-sunny b { color: #b26a00; }
+
+.weather-card.wx-cloudy {
+    background:
+        radial-gradient(52px 34px at 20% 18%, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0) 70%),
+        radial-gradient(64px 40px at 38% 8%, rgba(255, 255, 255, 0.90), rgba(255, 255, 255, 0) 70%),
+        radial-gradient(56px 34px at 74% 22%, rgba(255, 255, 255, 0.85), rgba(255, 255, 255, 0) 70%),
+        linear-gradient(170deg, #edf5fc, #cfe3f5);
+    border: 1px solid rgba(120, 144, 156, 0.28);
+}
+.weather-card.wx-cloudy b { color: #50677d; }
+
+.weather-card.wx-overcast {
+    background:
+        radial-gradient(120% 60% at 50% 0%, rgba(255, 255, 255, 0.35), transparent 60%),
+        linear-gradient(175deg, #dde4ec, #b9c6d6);
+    border: 1px solid rgba(96, 125, 139, 0.32);
+}
+.weather-card.wx-overcast b { color: #546e7a; }
+
+.weather-card.wx-rain {
+    background:
+        repeating-linear-gradient(115deg, transparent 0 16px, rgba(86, 134, 179, 0.22) 16px 18px, transparent 18px 24px),
+        radial-gradient(150% 70% at 50% 110%, rgba(21, 101, 192, 0.14), transparent 60%),
+        linear-gradient(175deg, #dfe9f2, #b9cbdd);
+    border: 1px solid rgba(69, 119, 166, 0.34);
+}
+.weather-card.wx-rain b { color: #3f6f9d; }
+
+.weather-card.wx-snow {
+    background:
+        radial-gradient(3px 3px at 18% 26%, rgba(255, 255, 255, 0.95), transparent 60%),
+        radial-gradient(3px 3px at 34% 60%, rgba(255, 255, 255, 0.90), transparent 60%),
+        radial-gradient(3px 3px at 52% 34%, rgba(255, 255, 255, 0.95), transparent 60%),
+        radial-gradient(3px 3px at 70% 62%, rgba(255, 255, 255, 0.90), transparent 60%),
+        radial-gradient(3px 3px at 86% 30%, rgba(255, 255, 255, 0.95), transparent 60%),
+        radial-gradient(150% 60% at 50% 0%, rgba(255, 255, 255, 0.50), transparent 60%),
+        linear-gradient(175deg, #f4f9fd, #d9e6f4);
+    border: 1px solid rgba(144, 164, 174, 0.35);
+}
+.weather-card.wx-snow b { color: #546e7a; }
+
+.weather-card.wx-fog {
+    background:
+        linear-gradient(90deg, rgba(255, 255, 255, 0.40), transparent 30%, rgba(255, 255, 255, 0.15) 55%, transparent 80%),
+        linear-gradient(165deg, #e9edf2, #cfd8df);
+    border: 1px solid rgba(120, 144, 156, 0.28);
+}
+.weather-card.wx-fog b { color: #78909c; }
 
 .result-card {
     border-left: 3px solid var(--accent);
@@ -328,11 +387,28 @@ section.main p {
 /* ---------- 侧边栏：左侧毛玻璃面板 ---------- */
 [data-testid="stSidebar"] {
     display: block;
-    background: rgba(250, 252, 255, 0.72);
-    backdrop-filter: blur(22px) saturate(170%);
-    -webkit-backdrop-filter: blur(22px) saturate(170%);
-    border-right: 1px solid var(--line);
-    box-shadow: 8px 0 30px rgba(13, 71, 161, 0.04);
+    position: relative;
+    background:
+        linear-gradient(165deg, rgba(255, 255, 255, 0.60), rgba(238, 244, 252, 0.40)),
+        radial-gradient(140% 70% at 0% 0%, rgba(38, 198, 218, 0.10), transparent 55%);
+    backdrop-filter: blur(24px) saturate(175%);
+    -webkit-backdrop-filter: blur(24px) saturate(175%);
+    border-right: 1px solid rgba(255, 255, 255, 0.60);
+    box-shadow:
+        inset -1px 0 0 rgba(255, 255, 255, 0.35),
+        8px 0 30px rgba(13, 71, 161, 0.06);
+}
+
+/* 玻璃斜向高光 + 顶部亮边 */
+[data-testid="stSidebar"]::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+        linear-gradient(115deg, rgba(255, 255, 255, 0.12), transparent 38%),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.55), transparent 90px);
 }
 
 [data-testid="stSidebar"] > div {
@@ -387,12 +463,12 @@ section.main p {
     gap: 4px;
     width: 100%;
     padding: 3px;
-    background: rgba(255, 255, 255, 0.62);
+    background: rgba(255, 255, 255, 0.50);
     border: 1px solid var(--line);
     border-radius: 999px;
     box-shadow: inset 0 1px 2px rgba(13, 71, 161, 0.04);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(10px) saturate(160%);
+    -webkit-backdrop-filter: blur(10px) saturate(160%);
 }
 
 [data-testid="stRadioOption"] {
@@ -451,7 +527,9 @@ section.main p {
 [data-testid="stSidebar"] [data-testid="stSelectbox"] > div > div,
 [data-testid="stSidebar"] [data-testid="stNumberInput"] input,
 [data-testid="stSidebar"] [data-testid="stDateInput"] input {
-    background: rgba(255, 255, 255, 0.92) !important;
+    background: rgba(255, 255, 255, 0.60) !important;
+    backdrop-filter: blur(8px) saturate(150%);
+    -webkit-backdrop-filter: blur(8px) saturate(150%);
     border: 1px solid var(--line) !important;
     color: var(--text) !important;
     border-radius: 12px !important;
@@ -1093,4 +1171,134 @@ iframe {
     width: 100%;
     height: 100%;
     display: block;
+}
+
+/* ============================================================
+   UI 增强：开始规划飞行动画 + 侧边栏自动隐藏/悬停弹出
+   ============================================================ */
+
+/* ---------- ✈️ 开始规划按钮点击动画 ---------- */
+@keyframes hh-fly {
+    0% {
+        transform: translateX(0) translateY(0) rotate(0deg) scale(0.6);
+        opacity: 0;
+    }
+    16% { opacity: 1; }
+    50% {
+        transform: translateX(calc(var(--hh-fly-dist) / 2)) translateY(-6px) rotate(-6deg) scale(1.1);
+    }
+    100% {
+        transform: translateX(var(--hh-fly-dist)) translateY(0) rotate(-14deg) scale(0.95);
+        opacity: 0;
+    }
+}
+
+.hh-plane {
+    position: fixed;
+    z-index: 2147483000;
+    font-size: 22px;
+    line-height: 1;
+    pointer-events: none;
+    will-change: transform, opacity;
+    filter: drop-shadow(0 2px 6px rgba(13, 71, 161, 0.35));
+    animation: hh-fly 750ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
+}
+
+@keyframes hh-btn-pulse {
+    0%   { transform: scale(0.97); }
+    30%  { transform: scale(1.04); }
+    60%  { transform: scale(1.0); }
+    100% { transform: scale(1.0); }
+}
+
+.hh-flying {
+    animation: hh-btn-pulse 750ms var(--ease-out);
+}
+
+/* 侧边栏收起/弹出：平滑过渡（配合 Streamlit 原生收起状态） */
+#Sidebar,
+[data-testid="stSidebar"] {
+    transition: width 260ms var(--ease-drawer), transform 260ms var(--ease-drawer);
+}
+
+/* ---------- 左缘悬停热区 + 「⚙ 参数」把手 ---------- */
+#hh-sidebar-strip {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 12px;
+    z-index: 2147482998;
+    pointer-events: none;
+    background: transparent;
+    transition: background-color 200ms ease;
+}
+
+body.hh-sb-hidden #hh-sidebar-strip {
+    pointer-events: auto;
+}
+
+@media (hover: hover) and (pointer: fine) {
+    body.hh-sb-hidden #hh-sidebar-strip:hover {
+        background: linear-gradient(90deg, rgba(21, 101, 192, 0.10), transparent);
+    }
+}
+
+#hh-sidebar-tab {
+    position: fixed;
+    left: 0;
+    top: 50%;
+    z-index: 2147482999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 34px;
+    padding: 0.8rem 0.4rem;
+    writing-mode: vertical-rl;
+    letter-spacing: 0.08em;
+    font-size: 0.82rem;
+    font-weight: 600;
+    user-select: none;
+    cursor: pointer;
+    color: var(--accent-deep);
+    background: linear-gradient(165deg, rgba(255, 255, 255, 0.72), rgba(238, 244, 252, 0.50));
+    backdrop-filter: blur(14px) saturate(160%);
+    -webkit-backdrop-filter: blur(14px) saturate(160%);
+    border: 1px solid rgba(255, 255, 255, 0.65);
+    border-left: none;
+    border-radius: 0 14px 14px 0;
+    box-shadow: 2px 0 14px rgba(13, 71, 161, 0.10);
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(-50%) translateX(-6px);
+    transition: opacity 240ms var(--ease-out), transform 240ms var(--ease-out);
+}
+
+body.hh-sb-hidden #hh-sidebar-tab {
+    pointer-events: auto;
+    opacity: 1;
+    transform: translateY(-50%) translateX(0);
+}
+
+@media (hover: hover) and (pointer: fine) {
+    #hh-sidebar-tab:hover {
+        background: linear-gradient(165deg, rgba(255, 255, 255, 0.90), rgba(224, 236, 250, 0.66));
+        box-shadow: 2px 0 18px rgba(21, 101, 192, 0.18);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .hh-plane {
+        display: none;
+    }
+
+    #Sidebar,
+    [data-testid="stSidebar"] {
+        transition: opacity 200ms ease;
+    }
+
+    #hh-sidebar-tab {
+        transition: opacity 180ms ease;
+        transform: translateY(-50%) translateX(0);
+    }
 }

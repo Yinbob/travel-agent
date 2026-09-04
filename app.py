@@ -1,4 +1,4 @@
-"""智能旅行 & 酒店比价助手 — Streamlit Web 界面。"""
+﻿"""智能旅行 & 酒店比价助手 — Streamlit Web 界面。"""
 import asyncio
 import calendar
 import html
@@ -747,8 +747,8 @@ st.markdown(
 
 
 _AMBIENT_GLOW_HTML = """
-<div id="ambient-glow" aria-hidden="true">
-  <canvas id="ambient-glow-canvas" class="ag-canvas"></canvas>
+<div id="ambient-glow" aria-hidden="true" style="position:fixed;inset:0;z-index:999980;pointer-events:none">
+  <canvas id="ambient-glow-canvas" style="position:fixed;inset:0;width:100vw;height:100vh"></canvas>
 </div>
 <script>
 (function () {
@@ -767,6 +767,7 @@ _AMBIENT_GLOW_HTML = """
   var dpr = 1;
   var vw = window.innerWidth, vh = window.innerHeight, left = 0;
   var homeCX = 0, homeCY = 0;
+  var sbBottom = 0, sbCenterX = 0;
 
   function measure() {
     vw = window.innerWidth;
@@ -776,6 +777,14 @@ _AMBIENT_GLOW_HTML = """
     var paneW = Math.max(vw - left, 320);
     homeCX = left + paneW * 0.7;
     homeCY = vh * 0.34;
+    if (sb) {
+      var sbRect = sb.getBoundingClientRect();
+      sbBottom = sbRect.bottom;
+      sbCenterX = sbRect.left + sbRect.width / 2;
+    } else {
+      sbBottom = vh;
+      sbCenterX = 0;
+    }
     dpr = Math.min(window.devicePixelRatio || 1, 2);
     canvas.width = Math.round(vw * dpr);
     canvas.height = Math.round(vh * dpr);
@@ -783,31 +792,99 @@ _AMBIENT_GLOW_HTML = """
   }
   measure();
 
-  var N = 46;
   var rnd = function (a, b) { return a + Math.random() * (b - a); };
   var gauss = function () { return (Math.random() + Math.random() + Math.random() - 1.5) / 1.5; };
-  var spreadX = 300, spreadY = 200;
-  var parts = [];
+
+  // ============ 中心模式粒子 ============
+  var N = 46;
+  var spreadR = 400;
+  var centerParts = [];
   for (var i = 0; i < N; i++) {
-    parts.push({
-      offX: gauss() * spreadX,
-      offY: gauss() * spreadY,
+    var angle = Math.random() * 6.2832;
+    var radius = (i < 8) ? (Math.random() * 60) : (Math.sqrt(Math.random()) * spreadR);
+    centerParts.push({
+      offX: Math.cos(angle) * radius,
+      offY: Math.sin(angle) * radius,
       jx: rnd(-1, 1),
       jy: rnd(-1, 1),
       x: homeCX, y: homeCY,
-      sizeS: rnd(100, 180),
+      sizeS: rnd(120, 220),
       sizeG: rnd(50, 90),
-      aS: rnd(0.03, 0.05),
+      aS: (i < 8) ? rnd(0.05, 0.08) : rnd(0.025, 0.045),
       aG: rnd(0.05, 0.075),
-      hueOff: rnd(-15, 15)
+      hueOff: rnd(-15, 15),
+      edgeTX: 0, edgeTY: 0,
+      edgeSize: 0, edgeAlpha: 0
     });
   }
 
+  // ============ 边缘模式粒子（全屏四周 + 四角） ============
+  var edgeN = 64; // 每条边 15 个 + 4 个角落
+  var edgeParts = [];
+  var edgeDepth = 25;
+  // 四条边各 15 个粒子
+  for (var i = 0; i < 60; i++) {
+    var side = Math.floor(i / 15);
+    var pos = ((i % 15) + Math.random() * 0.7) / 15;
+    var ex = 0, ey = 0;
+    var d = Math.abs(gauss()) * edgeDepth + 10;
+    switch (side) {
+      case 0: ex = pos * vw; ey = d; break;
+      case 1: ex = vw - d; ey = pos * vh; break;
+      case 2: ex = pos * vw; ey = vh - d; break;
+      case 3: ex = d; ey = pos * vh; break;
+    }
+    edgeParts.push({ x: ex, y: ey, size: rnd(140, 220), alpha: rnd(0.05, 0.09), hueOff: rnd(-20, 20) });
+  }
+  // 8 个角落粒子（每个角 2 个，大尺寸高亮度，确保四角全覆盖）
+  var cornerPos = [
+    [0, 0], [vw, 0], [vw, vh], [0, vh]
+  ];
+  for (var i = 0; i < 4; i++) {
+    var cx2 = cornerPos[i][0], cy2 = cornerPos[i][1];
+    var angle = Math.atan2(cy2 - vh/2, cx2 - vw/2);
+    // 主角落粒子：大尺寸，覆盖角本身
+    edgeParts.push({
+      x: cx2 + Math.cos(angle) * 8,
+      y: cy2 + Math.sin(angle) * 8,
+      size: rnd(320, 420),
+      alpha: rnd(0.10, 0.16),
+      hueOff: rnd(-10, 10)
+    });
+    // 副角落粒子：略偏向边内侧，覆盖角附近的边缘区域
+    edgeParts.push({
+      x: cx2 + Math.cos(angle) * 25,
+      y: cy2 + Math.sin(angle) * 25,
+      size: rnd(240, 320),
+      alpha: rnd(0.07, 0.12),
+      hueOff: rnd(-15, 15)
+    });
+  }
+  // 额外 4 个粒子覆盖顶部侧边栏上方区域（中心在边缘，向屏幕内渐淡）
+  for (var i = 0; i < 4; i++) {
+    var px = left * (i + 0.5) / 4;
+    edgeParts.push({
+      x: px, y: 0,
+      size: rnd(300, 400),
+      alpha: rnd(0.12, 0.18),
+      hueOff: rnd(-10, 10)
+    });
+  }
+
+  // ============ 状态变量 ============
   var active = false;
   var blend = 0;
   var mx = homeCX, my = homeCY;
   var focusX = homeCX, focusY = homeCY;
   var t0 = performance.now();
+
+  var driftX = 0, driftY = 0;
+  var driftTargetX = 0, driftTargetY = 0;
+  var lastExitX = homeCX, lastExitY = homeCY;
+
+  var planningMode = false;
+  var modeBlend = 0;
+  var edgeTargetsReady = false;
 
   var HUE_PALETTE = [216, 268, 322, 196, 216];
   function slowHue(now) {
@@ -822,6 +899,50 @@ _AMBIENT_GLOW_HTML = """
     return HUE_PALETTE[idx] + (HUE_PALETTE[idx + 1] - HUE_PALETTE[idx]) * e;
   }
 
+  // ============ 计算中心粒子到边缘的目标位置 ============
+  function assignEdgeTargets() {
+    for (var i = 0; i < centerParts.length; i++) {
+      var p = centerParts[i];
+      var angle = Math.atan2(p.offY, p.offX);
+      var cosA = Math.cos(angle), sinA = Math.sin(angle);
+      var t = Infinity;
+      if (sinA < 0) { var tt = -homeCY / sinA; if (tt > 0 && tt < t) t = tt; }
+      if (sinA > 0) { var tt = (vh - homeCY) / sinA; if (tt > 0 && tt < t) t = tt; }
+      if (cosA < 0) { var tt = (0 - homeCX) / cosA; if (tt > 0 && tt < t) t = tt; }
+      if (cosA > 0) { var tt = (vw - homeCX) / cosA; if (tt > 0 && tt < t) t = tt; }
+      var margin = 20;
+      p.edgeTX = homeCX + cosA * (t - margin);
+      p.edgeTY = homeCY + sinA * (t - margin);
+      p.edgeSize = rnd(80, 150);
+      p.edgeAlpha = rnd(0.04, 0.07);
+    }
+    edgeTargetsReady = true;
+  }
+
+  // ============ 进度条检测 ============
+  function checkProgressBar() {
+    var el = document.querySelector('[data-testid="stProgress"]');
+    var found = el !== null && el.isConnected;
+    if (found !== planningMode) {
+      planningMode = found;
+      if (planningMode) {
+        assignEdgeTargets();
+      } else {
+        edgeTargetsReady = false;
+      }
+    }
+  }
+
+  var observer = null;
+  function startObserver() {
+    if (observer) return;
+    observer = new MutationObserver(function () { checkProgressBar(); });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+  startObserver();
+  checkProgressBar();
+
+  // ============ 鼠标事件 ============
   function onMove(e) {
     if (!root.isConnected) {
       document.removeEventListener("mousemove", onMove);
@@ -829,63 +950,193 @@ _AMBIENT_GLOW_HTML = """
     }
     mx = e.clientX;
     my = e.clientY;
-    active = mx >= left + 10 && mx <= vw && my >= 0 && my <= vh;
+    active = mx >= 0 && mx <= vw && my >= 0 && my <= vh;
+    if (active) {
+      lastExitX = mx;
+      lastExitY = my;
+    }
   }
-  function onLeave() { active = false; }
+  function onLeave() {
+    active = false;
+    var dx = lastExitX - homeCX;
+    var dy = lastExitY - homeCY;
+    var len = Math.sqrt(dx * dx + dy * dy) || 1;
+    var dist = 150 + Math.random() * 100;
+    driftTargetX = (dx / len) * dist;
+    driftTargetY = (dy / len) * dist;
+  }
   function onResize() {
     measure();
-    for (var i = 0; i < parts.length; i++) {
-      parts[i].x = homeCX + parts[i].offX;
-      parts[i].y = homeCY + parts[i].offY;
+    // 重新计算边缘粒子位置
+    for (var i = 0; i < 60; i++) {
+      var side = Math.floor(i / 15);
+      var pos = ((i % 15) + Math.random() * 0.7) / 15;
+      var d = Math.abs(gauss()) * edgeDepth + 10;
+      switch (side) {
+        case 0: edgeParts[i].x = pos * vw; edgeParts[i].y = d; break;
+        case 1: edgeParts[i].x = vw - d; edgeParts[i].y = pos * vh; break;
+        case 2: edgeParts[i].x = pos * vw; edgeParts[i].y = vh - d; break;
+        case 3: edgeParts[i].x = d; edgeParts[i].y = pos * vh; break;
+      }
+    }
+    // 角落粒子（每个角 2 个）
+    var cPos = [
+      [0, 0], [vw, 0], [vw, vh], [0, vh]
+    ];
+    for (var i = 0; i < 4; i++) {
+      var cx2 = cPos[i][0], cy2 = cPos[i][1];
+      var angle = Math.atan2(cy2 - vh/2, cx2 - vw/2);
+      edgeParts[60 + i * 2].x = cx2 + Math.cos(angle) * 8;
+      edgeParts[60 + i * 2].y = cy2 + Math.sin(angle) * 8;
+      edgeParts[60 + i * 2 + 1].x = cx2 + Math.cos(angle) * 25;
+      edgeParts[60 + i * 2 + 1].y = cy2 + Math.sin(angle) * 25;
+    }
+    // 顶部侧边栏上方区域额外粒子（中心在边缘）
+    for (var i = 0; i < 4; i++) {
+      var px = left * (i + 0.5) / 4;
+      edgeParts[68 + i].x = px;
+      edgeParts[68 + i].y = 0;
+    }
+    for (var i = 0; i < centerParts.length; i++) {
+      centerParts[i].x = homeCX + centerParts[i].offX + driftX;
+      centerParts[i].y = homeCY + centerParts[i].offY + driftY;
     }
   }
 
+  // ============ 绘制 ============
   function draw(now) {
     var hue = slowHue(now);
     var gatheredSpread = 50;
+    var cx = homeCX + driftX;
+    var cy = homeCY + driftY;
     ctx.clearRect(0, 0, vw, vh);
     ctx.globalCompositeOperation = "lighter";
-    for (var i = 0; i < parts.length; i++) {
-      var p = parts[i];
-      var hx = homeCX + p.offX;
-      var hy = homeCY + p.offY;
+
+    // ---- 中心模式层 ----
+    var centerAlpha = Math.max(0, 1 - modeBlend * 1.2);
+    if (centerAlpha > 0.001) {
+      var idleCore = 1 - blend;
+      var hh = hue;
+      var outerCol = "hsla(" + hh.toFixed(1) + ", 88%, 70%, " + (0.035 * idleCore * centerAlpha).toFixed(4) + ")";
+      var outerGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, spreadR + 60);
+      outerGrad.addColorStop(0, outerCol);
+      outerGrad.addColorStop(0.5, outerCol);
+      outerGrad.addColorStop(1, "hsla(" + hh.toFixed(1) + ", 88%, 70%, 0)");
+      ctx.fillStyle = outerGrad;
+      ctx.beginPath(); ctx.arc(cx, cy, spreadR + 60, 0, 6.2832); ctx.fill();
+
+      var coreCol = "hsla(" + hh.toFixed(1) + ", 92%, 65%, " + (0.18 * idleCore * centerAlpha).toFixed(4) + ")";
+      var coreGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, 280);
+      coreGrad.addColorStop(0, coreCol);
+      coreGrad.addColorStop(0.3, coreCol);
+      coreGrad.addColorStop(0.6, "hsla(" + hh.toFixed(1) + ", 92%, 65%, " + (0.08 * idleCore * centerAlpha).toFixed(4) + ")");
+      coreGrad.addColorStop(1, "hsla(" + hh.toFixed(1) + ", 92%, 65%, 0)");
+      ctx.fillStyle = coreGrad;
+      ctx.beginPath(); ctx.arc(cx, cy, 280, 0, 6.2832); ctx.fill();
+    }
+
+    // ---- 中心粒子层（过渡中移动到边缘） ----
+    for (var i = 0; i < centerParts.length; i++) {
+      var p = centerParts[i];
+      var hx, hy;
+      if (edgeTargetsReady && modeBlend > 0.01) {
+        var baseX = cx + p.offX;
+        var baseY = cy + p.offY;
+        var eLerp = Math.min(1, modeBlend * 1.5);
+        hx = baseX + (p.edgeTX - baseX) * eLerp;
+        hy = baseY + (p.edgeTY - baseY) * eLerp;
+      } else {
+        hx = cx + p.offX;
+        hy = cy + p.offY;
+      }
       var tx = hx + (focusX + p.jx * gatheredSpread - hx) * blend;
       var ty = hy + (focusY + p.jy * gatheredSpread - hy) * blend;
       p.x += (tx - p.x) * 0.07;
       p.y += (ty - p.y) * 0.07;
-      var size = p.sizeS + (p.sizeG - p.sizeS) * blend;
-      var alpha = p.aS + (p.aG - p.aS) * blend;
+
+      var size, alpha;
+      if (edgeTargetsReady && modeBlend > 0.01) {
+        var eLerp = Math.min(1, modeBlend * 1.5);
+        var s1 = p.sizeS + (p.sizeG - p.sizeS) * blend;
+        size = s1 + (p.edgeSize - s1) * eLerp;
+        var a1 = (p.aS + (p.aG - p.aS) * blend);
+        alpha = (a1 + (p.edgeAlpha - a1) * eLerp) * Math.max(0, 1 - modeBlend * 0.5);
+      } else {
+        size = p.sizeS + (p.sizeG - p.sizeS) * blend;
+        alpha = (p.aS + (p.aG - p.aS) * blend) * centerAlpha;
+      }
       var hh = hue + p.hueOff;
       var col = "hsla(" + hh.toFixed(1) + ", 88%, 72%, " + alpha.toFixed(4) + ")";
       var grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, size);
       grad.addColorStop(0, col);
       grad.addColorStop(1, "hsla(" + hh.toFixed(1) + ", 88%, 72%, 0)");
       ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, size, 0, 6.2832);
-      ctx.fill();
+      ctx.beginPath(); ctx.arc(p.x, p.y, size, 0, 6.2832); ctx.fill();
     }
+
+    // ---- 边缘模式层 ----
+    var edgeAlpha = modeBlend;
+    if (edgeAlpha > 0.001) {
+      var hh = hue;
+      // 边缘泛光呼吸动效：整体 alpha 缓慢脉动
+      var breathe = 0.85 + 0.15 * Math.sin(performance.now() * 0.0008 + t0 * 0.001);
+      for (var i = 0; i < edgeParts.length; i++) {
+        var p = edgeParts[i];
+        var a = p.alpha * edgeAlpha * breathe;
+        var hh2 = hh + p.hueOff;
+        var col = "hsla(" + hh2.toFixed(1) + ", 88%, 72%, " + a.toFixed(4) + ")";
+        var grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.size);
+        grad.addColorStop(0, col);
+        grad.addColorStop(1, "hsla(" + hh2.toFixed(1) + ", 88%, 72%, 0)");
+        ctx.fillStyle = grad;
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, 6.2832); ctx.fill();
+      }
+    }
+
+    // 鼠标聚焦光束已整合到粒子层中（粒子随惯性向光标收束）
+
     ctx.globalCompositeOperation = "source-over";
   }
 
+  // ============ 动画循环 ============
   var raf = null;
   function tick(now) {
     if (!root.isConnected) { cleanup(); return; }
+
+    checkProgressBar();
+
+    var modeTarget = planningMode ? 1 : 0;
+    modeBlend += (modeTarget - modeBlend) * 0.03;
+    if (modeTarget === 0 && modeBlend < 0.001) modeBlend = 0;
+    if (modeTarget === 1 && modeBlend > 0.999) modeBlend = 1;
+
     var target = active ? 1 : 0;
     blend += (target - blend) * 0.05;
     if (target === 0 && blend < 0.001) blend = 0;
     if (target === 1 && blend > 0.999) blend = 1;
+
+    if (!active) {
+      driftX += (driftTargetX - driftX) * 0.006;
+      driftY += (driftTargetY - driftY) * 0.006;
+    } else {
+      driftX += (0 - driftX) * 0.01;
+      driftY += (0 - driftY) * 0.01;
+    }
+
     var fxk = active ? 0.03 : 0.02;
     var fxt = active ? mx : homeCX;
     var fyt = active ? my : homeCY;
     focusX += (fxt - focusX) * fxk;
     focusY += (fyt - focusY) * fxk;
+
     draw(now);
     raf = requestAnimationFrame(tick);
   }
+
   function cleanup() {
     if (raf) cancelAnimationFrame(raf);
     raf = null;
+    if (observer) { observer.disconnect(); observer = null; }
     document.removeEventListener("mousemove", onMove);
     document.removeEventListener("mouseleave", onLeave);
     window.removeEventListener("resize", onResize);
@@ -914,6 +1165,200 @@ def _inject_ambient_glow():
     st.html(_AMBIENT_GLOW_HTML, unsafe_allow_javascript=True)
 
 
+_SIDEBAR_HARNESS_HTML = """
+<style>
+  /* 侧边栏自动隐藏 - 热区 + 把手样式 */
+  #hh-sidebar-strip {
+    position: fixed; left: 0; top: 0; bottom: 0; width: 16px;
+    z-index: 999990; cursor: default;
+  }
+  #hh-sidebar-tab {
+    position: fixed; left: 0; top: 50%; transform: translateY(-50%);
+    z-index: 999991;
+    background: rgba(255,255,255,.85); backdrop-filter: blur(8px);
+    border: 1px solid rgba(0,0,0,.08); border-left: none;
+    border-radius: 0 10px 10px 0;
+    padding: 10px 8px 10px 4px;
+    font-size: 13px; color: #555; cursor: pointer;
+    box-shadow: 2px 0 8px rgba(0,0,0,.06);
+    transition: opacity .15s ease;
+    user-select: none; white-space: nowrap; writing-mode: vertical-lr;
+    letter-spacing: 2px;
+  }
+  #hh-sidebar-tab:hover { background: rgba(255,255,255,.95); color: #222; }
+  /* 侧边栏展开/收起动画速度 */
+  section[data-testid="stSidebar"] {
+    transition: width 0.6s ease, min-width 0.6s ease, max-width 0.6s ease !important;
+  }
+  section[data-testid="stSidebar"] > div {
+    transition: width 0.6s ease !important;
+  }
+  section[data-testid="stSidebar"] .stSidebarCollapseButton {
+    transition: all 0.6s ease !important;
+  }
+  /* 主内容区域移动动画 */
+  .stAppHeader, .stMain, .st-emotion-cache-1y4p8pa, .st-emotion-cache-1wrcr25 {
+    transition: margin-left 0.6s ease, padding-left 0.6s ease !important;
+  }
+  .stApp > section:not([data-testid="stSidebar"]) {
+    transition: margin-left 0.6s ease !important;
+  }
+</style>
+<div id="hh-ui" aria-hidden="true" data-hh-mode="__HH_MODE__" data-hh-ready="__HH_READY__"
+     style="display:none"></div>
+<script>
+(function () {
+  var ui = document.getElementById("hh-ui");
+  if (!ui) return;
+
+  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var finePointer = window.matchMedia && window.matchMedia("(pointer: fine)").matches;
+  var mode = ui.getAttribute("data-hh-mode") || "";
+  var ready = ui.getAttribute("data-hh-ready") === "1";
+  var travel = mode === "travel";
+
+  var HIDE_KEY = "hh_sb_auto_hide";
+  function getFlag() {
+    try { return sessionStorage.getItem(HIDE_KEY) === "1"; } catch (e) { return false; }
+  }
+  function setFlag(v) {
+    try { sessionStorage.setItem(HIDE_KEY, v ? "1" : "0"); } catch (e) {}
+  }
+
+  function sidebarEl() { return document.querySelector('[data-testid="stSidebar"]'); }
+  function collapseBtn() { return document.querySelector('[data-testid="stSidebarCollapseButton"]'); }
+  function isOpen() {
+    var s = sidebarEl();
+    if (!s) return true;
+    return s.getBoundingClientRect().width > 120;
+  }
+  function toggleCollapse() {
+    // Streamlit 1.63: data-testid 元素是外层容器，真正可点击的是内部 button
+    var b = collapseBtn();
+    if (!b) return;
+    var inner = b.querySelector('button');
+    (inner || b).click();
+  }
+  function syncHidden() {
+    var hidden = travel && ready && finePointer && !isOpen();
+    document.body.classList.toggle("hh-sb-hidden", hidden);
+  }
+
+  // 清理上次脚本追加到 body 的 UI（st.html 的 innerHTML 重置不会清理它们）
+  function removeById(id) {
+    var el = document.getElementById(id);
+    if (el) el.remove();
+  }
+  removeById("hh-sidebar-strip");
+  removeById("hh-sidebar-tab");
+
+  // ---------- ✈️ 开始规划按钮点击动画 ----------
+  if (!window.__hhFlyBound) {
+    window.__hhFlyBound = true;
+    document.addEventListener("click", function (ev) {
+      var btn = ev.target && ev.target.closest
+        ? ev.target.closest('[data-testid="stButton"] button')
+        : null;
+      if (!btn) return;
+      if ((btn.innerText || "").trim().indexOf("开始规划") === -1) return;
+      if (reduce || document.querySelector(".hh-plane")) return;
+      var r = btn.getBoundingClientRect();
+      if (!r.width || !r.height) return;
+      var plane = document.createElement("div");
+      plane.className = "hh-plane";
+      plane.textContent = "✈️";
+      plane.style.left = Math.round(r.left + 6) + "px";
+      plane.style.top = Math.round(r.top + r.height / 2) + "px";
+      plane.style.setProperty("--hh-fly-dist", Math.round(r.width + 20) + "px");
+      document.body.appendChild(plane);
+      btn.classList.add("hh-flying");
+      var done = function () {
+        plane.remove();
+        btn.classList.remove("hh-flying");
+      };
+      plane.addEventListener("animationend", done, { once: true });
+      window.setTimeout(done, 1100);
+    });
+  }
+
+  // ---------- 侧边栏自动隐藏（仅旅行规划 + 精细指针） ----------
+  var timers = window.__hhTimers || (window.__hhTimers = {});
+  var clearTimer = function (key) {
+    if (timers[key]) { clearTimeout(timers[key]); timers[key] = null; }
+  };
+
+  if (travel && finePointer) {
+    if (ready) {
+      // 结果就绪：约 1 秒后自动收起
+      clearTimer("hide");
+      timers.hide = window.setTimeout(function () {
+        timers.hide = null;
+        if (isOpen()) {
+          toggleCollapse();
+          setFlag(true);
+        }
+      }, 2000);
+
+      // 左缘热区 + 「⚙ 参数」小把手
+      var strip = document.createElement("div");
+      strip.id = "hh-sidebar-strip";
+      document.body.appendChild(strip);
+      var tab = document.createElement("div");
+      tab.id = "hh-sidebar-tab";
+      tab.textContent = "⚙ 参数";
+      document.body.appendChild(tab);
+
+      function openSidebar() {
+        if (!isOpen()) {
+          toggleCollapse();
+          setFlag(true);
+        }
+      }
+      strip.addEventListener("mouseenter", openSidebar);
+      tab.addEventListener("click", openSidebar);
+      var sb = sidebarEl();
+      if (sb) {
+        sb.addEventListener("mouseleave", function () {
+          clearTimer("leave");
+          timers.leave = window.setTimeout(function () {
+            timers.leave = null;
+            if (isOpen() &&
+                !document.querySelector("#hh-sidebar-strip:hover, #hh-sidebar-tab:hover")) {
+              toggleCollapse();
+              setFlag(true);
+            }
+          }, 500);
+        });
+      }
+    } else if (getFlag() && !isOpen()) {
+      // 结果清空后恢复展开（仅当是本功能收起的）
+      toggleCollapse();
+      setFlag(false);
+    }
+  } else if (!travel && getFlag() && !isOpen()) {
+    // 离开旅行模式：恢复侧边栏
+    toggleCollapse();
+    setFlag(false);
+  }
+
+  // 周期同步 body.hh-sb-hidden（覆盖用户用原生按钮开合侧边栏等场景）
+  if (!window.__hhSyncTimer) {
+    window.__hhSyncTimer = window.setInterval(function () {
+      var st = window.__hhUiState;
+      if (!st) return;
+      var s = sidebarEl();
+      var hidden = st.travel && st.ready && st.fine && (!s || s.getBoundingClientRect().width <= 120);
+      var has = document.body.classList.contains("hh-sb-hidden");
+      if (hidden !== has) document.body.classList.toggle("hh-sb-hidden", hidden);
+    }, 700);
+  }
+  window.__hhUiState = { travel: travel, ready: ready, fine: finePointer };
+  syncHidden();
+})();
+</script>
+"""
+
+
 # ==================== 通用辅助 ====================
 
 def _signal_badge(signal: str) -> str:
@@ -925,6 +1370,44 @@ def _signal_badge(signal: str) -> str:
     else:
         cls = "signal-red"
     return f'<span class="signal-badge {cls}">{signal}</span>'
+
+
+def _weather_class(text: str) -> str:
+    """把 AMAP 天气文本归为 wx-* 卡片背景类（晴/多云/阴/雨/雪/雾，兜底 unknown）。"""
+    t = text or ""
+    for kw, cls in (
+        ("雨", "wx-rain"), ("雷", "wx-rain"), ("冰雹", "wx-rain"),
+        ("雪", "wx-snow"),
+        ("雾", "wx-fog"), ("霾", "wx-fog"), ("浮尘", "wx-fog"), ("扬沙", "wx-fog"), ("沙尘", "wx-fog"),
+        ("阴", "wx-overcast"),
+        ("多云", "wx-cloudy"),
+        ("晴", "wx-sunny"),
+    ):
+        if kw in t:
+            return cls
+    return "wx-unknown"
+
+
+def _weather_icon(text: str) -> str:
+    """按天气文本返回语义化天气 emoji。"""
+    t = text or ""
+    if "雷" in t:
+        return "⛈️"
+    if "阵雨" in t:
+        return "🌦️"
+    if "雨" in t:
+        return "🌧️"
+    if "雪" in t:
+        return "❄️"
+    if "雾" in t or "霾" in t:
+        return "🌫️"
+    if "多云" in t:
+        return "⛅"
+    if "阴" in t:
+        return "☁️"
+    if "晴" in t:
+        return "☀️"
+    return "🌡️"
 
 
 def _esc(value) -> str:
@@ -1701,21 +2184,19 @@ def travel_mode():
                 unsafe_allow_html=True,
             )
         cols = st.columns(len(weather))
-        weather_icon_map = {
-            "晴": "☀️", "多云": "⛅", "阴": "☁️",
-            "小雨": "🌧️", "中雨": "🌧️", "大雨": "⛈️", "暴雨": "⛈️",
-        }
 
         for i, w in enumerate(weather):
+            day_wx = w.get("day_weather", "")
             d = w.get("date", "")[-5:]
-            di = weather_icon_map.get(w.get("day_weather", ""), "🌡️")
+            di = _weather_icon(day_wx)
+            wx_cls = _weather_class(day_wx)
             with cols[i]:
                 st.markdown(
-                    f"""<div class="weather-card fade-in d{min(i + 1, 6)}" style="text-align:center">
-                    <b>{d}</b><br>
-                    {di} {w.get('day_weather', '?')}<br>
-                    🌡️ {w.get('day_temp', '?')}°C / {w.get('night_temp', '?')}°C<br>
-                    💨 {w.get('wind_direction', '')}{w.get('wind_power', '')}
+                    f"""<div class="weather-card {wx_cls} fade-in d{min(i + 1, 6)}" style="text-align:center">
+                    <b>{_esc(d)}</b><br>
+                    {di} {_esc(day_wx or '?')}<br>
+                    🌡️ {_esc(w.get('day_temp', '?'))}°C / {_esc(w.get('night_temp', '?'))}°C<br>
+                    💨 {_esc(w.get('wind_direction', ''))}{_esc(w.get('wind_power', ''))}
                     </div>""",
                     unsafe_allow_html=True,
                 )
@@ -1866,6 +2347,14 @@ with st.sidebar:
         key="app_mode",
     )
     st.markdown("---")
+
+# ---- UI 增强：侧边栏自动隐藏（旅行模式）+ 「开始规划」飞行动画 ----
+st.html(
+    _SIDEBAR_HARNESS_HTML
+    .replace("__HH_MODE__", "travel" if mode == "🧳 智能旅行规划" else "hotel")
+    .replace("__HH_READY__", "1" if st.session_state.get("plan_data") is not None else "0"),
+    unsafe_allow_javascript=True,
+)
 
 if mode == "🧳 智能旅行规划":
     travel_mode()

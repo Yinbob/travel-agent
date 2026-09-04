@@ -1,0 +1,154 @@
+"""
+<div id="hh-ui" aria-hidden="true" data-hh-mode="__HH_MODE__" data-hh-ready="__HH_READY__"
+     style="display:none"></div>
+<script>
+(function () {
+  var ui = document.getElementById("hh-ui");
+  if (!ui) return;
+
+  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var finePointer = window.matchMedia && window.matchMedia("(pointer: fine)").matches;
+  var mode = ui.getAttribute("data-hh-mode") || "";
+  var ready = ui.getAttribute("data-hh-ready") === "1";
+  var travel = mode === "travel";
+
+  var HIDE_KEY = "hh_sb_auto_hide";
+  function getFlag() {
+    try { return sessionStorage.getItem(HIDE_KEY) === "1"; } catch (e) { return false; }
+  }
+  function setFlag(v) {
+    try { sessionStorage.setItem(HIDE_KEY, v ? "1" : "0"); } catch (e) {}
+  }
+
+  function sidebarEl() { return document.querySelector('[data-testid="stSidebar"]'); }
+  function collapseBtn() { return document.querySelector('[data-testid="stSidebarCollapseButton"]'); }
+  function isOpen() {
+    var s = sidebarEl();
+    if (!s) return true;
+    return s.getBoundingClientRect().width > 120;
+  }
+  function toggleCollapse() {
+    // Streamlit 1.63: data-testid 元素是外层容器，真正可点击的是内部 button
+    var b = collapseBtn();
+    if (!b) return;
+    var inner = b.querySelector('button');
+    (inner || b).click();
+  }
+  function syncHidden() {
+    var hidden = travel && ready && finePointer && !isOpen();
+    document.body.classList.toggle("hh-sb-hidden", hidden);
+  }
+
+  // 清理上次脚本追加到 body 的 UI（st.html 的 innerHTML 重置不会清理它们）
+  function removeById(id) {
+    var el = document.getElementById(id);
+    if (el) el.remove();
+  }
+  removeById("hh-sidebar-strip");
+  removeById("hh-sidebar-tab");
+
+  // ---------- ✈️ 开始规划按钮点击动画 ----------
+  if (!window.__hhFlyBound) {
+    window.__hhFlyBound = true;
+    document.addEventListener("click", function (ev) {
+      var btn = ev.target && ev.target.closest
+        ? ev.target.closest('[data-testid="stButton"] button')
+        : null;
+      if (!btn) return;
+      if ((btn.innerText || "").trim().indexOf("开始规划") === -1) return;
+      if (reduce || document.querySelector(".hh-plane")) return;
+      var r = btn.getBoundingClientRect();
+      if (!r.width || !r.height) return;
+      var plane = document.createElement("div");
+      plane.className = "hh-plane";
+      plane.textContent = "✈️";
+      plane.style.left = Math.round(r.left + 6) + "px";
+      plane.style.top = Math.round(r.top + r.height / 2) + "px";
+      plane.style.setProperty("--hh-fly-dist", Math.round(r.width + 20) + "px");
+      document.body.appendChild(plane);
+      btn.classList.add("hh-flying");
+      var done = function () {
+        plane.remove();
+        btn.classList.remove("hh-flying");
+      };
+      plane.addEventListener("animationend", done, { once: true });
+      window.setTimeout(done, 1100);
+    });
+  }
+
+  // ---------- 侧边栏自动隐藏（仅旅行规划 + 精细指针） ----------
+  var timers = window.__hhTimers || (window.__hhTimers = {});
+  var clearTimer = function (key) {
+    if (timers[key]) { clearTimeout(timers[key]); timers[key] = null; }
+  };
+
+  if (travel && finePointer) {
+    if (ready) {
+      // 结果就绪：约 1 秒后自动收起
+      clearTimer("hide");
+      timers.hide = window.setTimeout(function () {
+        timers.hide = null;
+        if (isOpen()) {
+          toggleCollapse();
+          setFlag(true);
+        }
+      }, 1000);
+
+      // 左缘热区 + 「⚙ 参数」小把手
+      var strip = document.createElement("div");
+      strip.id = "hh-sidebar-strip";
+      document.body.appendChild(strip);
+      var tab = document.createElement("div");
+      tab.id = "hh-sidebar-tab";
+      tab.textContent = "⚙ 参数";
+      document.body.appendChild(tab);
+
+      function openSidebar() {
+        if (!isOpen()) {
+          toggleCollapse();
+          setFlag(true);
+        }
+      }
+      strip.addEventListener("mouseenter", openSidebar);
+      tab.addEventListener("click", openSidebar);
+      var sb = sidebarEl();
+      if (sb) {
+        sb.addEventListener("mouseleave", function () {
+          clearTimer("leave");
+          timers.leave = window.setTimeout(function () {
+            timers.leave = null;
+            if (isOpen() &&
+                !document.querySelector("#hh-sidebar-strip:hover, #hh-sidebar-tab:hover")) {
+              toggleCollapse();
+              setFlag(true);
+            }
+          }, 300);
+        });
+      }
+    } else if (getFlag() && !isOpen()) {
+      // 结果清空后恢复展开（仅当是本功能收起的）
+      toggleCollapse();
+      setFlag(false);
+    }
+  } else if (!travel && getFlag() && !isOpen()) {
+    // 离开旅行模式：恢复侧边栏
+    toggleCollapse();
+    setFlag(false);
+  }
+
+  // 周期同步 body.hh-sb-hidden（覆盖用户用原生按钮开合侧边栏等场景）
+  if (!window.__hhSyncTimer) {
+    window.__hhSyncTimer = window.setInterval(function () {
+      var st = window.__hhUiState;
+      if (!st) return;
+      var s = sidebarEl();
+      var hidden = st.travel && st.ready && st.fine && (!s || s.getBoundingClientRect().width <= 120);
+      var has = document.body.classList.contains("hh-sb-hidden");
+      if (hidden !== has) document.body.classList.toggle("hh-sb-hidden", hidden);
+    }, 700);
+  }
+  window.__hhUiState = { travel: travel, ready: ready, fine: finePointer };
+  syncHidden();
+})();
+</script>
+"""
